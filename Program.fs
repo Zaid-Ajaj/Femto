@@ -93,6 +93,66 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
     | _ ->
         topLevelPackages
 
+let rec checkPackage
+    (packages : NpmDependency list)
+    (installedPackages : ResizeArray<InstalledNpmPackage>)
+    (libraryName : string)
+    (isOk : bool) =
+
+    match packages with
+    | pkg::rest ->
+        logger.Information("")
+        let installed = installedPackages |> Seq.tryFind (fun p -> p.Name = pkg.Name)
+        let result =
+            match installed with
+            | None ->
+                logger.Error("{Library} depends on npm package '{Package}'", libraryName, pkg.Name, pkg.RawVersion)
+                logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
+                logger.Error("  | -- Missing '{package}' in package.json", pkg.Name)
+                if pkg.InstallHint <> ""
+                then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
+
+                false
+
+            | Some installedPackage  ->
+                match installedPackage.Range, installedPackage.Installed with
+                | Some range, Some version ->
+                    logger.Information("{Library} depends on npm package '{Package}'", libraryName, pkg.Name);
+                    logger.Information("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
+                    logger.Information("  | -- Used range {Range} in package.json", range.ToString())
+                    match pkg.Constraint with
+                    | Some requiredRange when requiredRange.IsSatisfied version ->
+                        logger.Information("  | -- √ Installed version {Version} satisfies required range {Range}", version.ToString(), requiredRange.ToString())
+                        true
+
+                    | _ ->
+                        logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
+                        if pkg.InstallHint <> ""
+                        then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
+                        false
+
+                | _ ->
+                    logger.Error("{Library} requires npm package '{Package}' ({Version}) which was not installed", libraryName, pkg.Name, pkg.Constraint.ToString())
+                    false
+
+        checkPackage rest installedPackages libraryName (isOk && result)
+    | [] ->
+        isOk
+
+let rec analyzePackages
+    (npmDependencies : (string * string * NpmDependency list) list)
+    (installedPackages : ResizeArray<InstalledNpmPackage>)
+    (isOk : bool) =
+
+    match npmDependencies with
+    | (path, libraryName, packages)::rest ->
+        let result =
+            checkPackage packages installedPackages libraryName true
+
+        analyzePackages rest installedPackages (isOk && result)
+    | [] ->
+        isOk
+
 [<EntryPoint>]
 let main argv =
     let project =
@@ -111,48 +171,31 @@ let main argv =
     logger.Information("Analyzing project {Project}", project)
     let projectInfo = ProjectCracker.fullCrack project
     let npmDependencies = findNpmDependencies projectInfo
-    match findPackageJson project with
-    | None ->
-        for (path, name, packages) in npmDependencies do
-            for pkg in packages do
-                logger.Information("{Library} requires npm package {Package} ({Version})", name, pkg.Name, pkg.RawVersion)
-        logger.Warning "Could not locate package.json file"
-        0
-    | Some packageJson ->
-        match needsNodeModules packageJson with
-        | Some command ->
-            logger.Information("Npm packages need to be restored first")
-            logger.Information("Restore npm packages using {Command}", command)
-            0
+
+    let result =
+        match findPackageJson project with
         | None ->
-        let installedPackages = findInstalledPackages packageJson
-        for (path, name, packages) in npmDependencies do
-            for pkg in packages do
-                logger.Information("")
-                let installed = installedPackages |> Seq.tryFind (fun p -> p.Name = pkg.Name)
-                match installed with
-                | None ->
-                    logger.Error("{Library} depends on npm package '{Package}'", name, pkg.Name, pkg.RawVersion)
-                    logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                    logger.Error("  | -- Missing '{package}' in package.json", pkg.Name)
-                    if pkg.InstallHint <> ""
-                    then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
-                | Some installedPackage  ->
-                    match installedPackage.Range, installedPackage.Installed with
-                    | Some range, Some version ->
-                        logger.Information("{Library} depends on npm package '{Package}'", name, pkg.Name);
-                        logger.Information("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                        logger.Information("  | -- Used range {Range} in package.json", range.ToString())
-                        match pkg.Constraint with
-                        | Some requiredRange when requiredRange.IsSatisfied version ->
-                            logger.Information("  | -- √ Installed version {Version} satisfies required range {Range}", version.ToString(), requiredRange.ToString())
-                        | _ ->
-                            logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                            if pkg.InstallHint <> ""
-                            then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
+            for (path, name, packages) in npmDependencies do
+                for pkg in packages do
+                    logger.Information("{Library} requires npm package {Package} ({Version})", name, pkg.Name, pkg.RawVersion)
+            logger.Warning "Could not locate package.json file"
 
-                    | _ ->
-                        logger.Error("{Library} requires npm package '{Package}' ({Version}) which was not installed", name, pkg.Name, pkg.Constraint.ToString())
-        0
+            FemtoResult.MissingPackageJson
 
+        | Some packageJson ->
+            match needsNodeModules packageJson with
+            | Some command ->
+                logger.Information("Npm packages need to be restored first")
+                logger.Information("Restore npm packages using {Command}", command)
 
+                FemtoResult.NodeModulesNotInstalled
+
+            | None ->
+                let installedPackages = findInstalledPackages packageJson
+
+                if analyzePackages npmDependencies installedPackages true then
+                    FemtoResult.ValidationSucceeded
+                else
+                    FemtoResult.ValidationFailed
+
+    int result

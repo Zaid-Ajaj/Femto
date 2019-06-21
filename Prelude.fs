@@ -1,5 +1,11 @@
 namespace Femto
 
+type FemtoResult =
+    | ValidationSucceeded = 0
+    | MissingPackageJson = 1
+    | NodeModulesNotInstalled = 2
+    | ValidationFailed = 3
+
 type ResizeArrayDictionary<'K, 'V when 'K : equality>() =
     let dic = System.Collections.Generic.Dictionary<'K, ResizeArray<'V>>()
     member __.Count = dic.Count
