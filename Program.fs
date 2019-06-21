@@ -6,15 +6,30 @@ open Npm
 open Newtonsoft.Json.Linq
 open FSharp.Compiler.AbstractIL.Internal.Library
 open System.Diagnostics
+open Fake.Core
+open Thoth.Json.Net
 
 let logger = LoggerConfiguration().WriteTo.Console().CreateLogger()
 
-let findNpmDependencies (project: CrackedFsproj) =
+type LibraryWithNpmDeps = {
+    Path : string
+    Name : string
+    NpmDependencies : NpmDependency list
+}
+
+let findLibraryWithNpmDeps (project: CrackedFsproj) =
     [ yield project.ProjectFile
       yield! project.ProjectReferences
       for package in project.PackageReferences do yield package.FsprojPath ]
-    |> List.map (fun proj -> proj, Path.GetFileNameWithoutExtension proj, Npm.parseDependencies (Path.normalizeFullPath proj))
-    |> List.filter (fun (path, name, deps) -> not (List.isEmpty deps))
+    |> List.map (fun proj ->
+        let npmDeps = Npm.parseDependencies (Path.normalizeFullPath proj)
+        {
+            Path = proj
+            Name = Path.GetFileNameWithoutExtension proj
+            NpmDependencies = npmDeps
+        }
+    )
+    |> List.filter (fun projet -> not (List.isEmpty projet.NpmDependencies))
 
 let rec findPackageJson (project: string) =
     let parentDir = IO.Directory.GetParent project
@@ -24,6 +39,26 @@ let rec findPackageJson (project: string) =
       |> IO.Directory.GetFiles
       |> Seq.tryFind (fun file -> file.EndsWith "package.json")
       |> Option.orElse (findPackageJson parentDir.FullName)
+
+[<RequireQualifiedAccess>]
+type NodeManager =
+    | Yarn
+    | Npm
+
+    member this.CommandName =
+        match this with
+        | Yarn -> "yarn"
+        | Npm -> "npm"
+
+let workspaceCommand (packageJson: string) =
+    let parentDir = IO.Directory.GetParent packageJson
+    let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
+    let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
+    let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
+    let packageLockExists = siblings |> List.exists (fun file -> file.EndsWith "package-lock.json")
+    if nodeModulesExists then NodeManager.Npm
+    elif yarnLockExists then NodeManager.Yarn
+    else NodeManager.Npm
 
 let needsNodeModules (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
@@ -93,31 +128,79 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
     | _ ->
         topLevelPackages
 
-let rec checkPackage
-    (packages : NpmDependency list)
+let private printInstallHint (nodeManager : NodeManager) (library : LibraryWithNpmDeps) (pkg : NpmDependency) =
+
+    let packageVersions =
+        match nodeManager with
+        | NodeManager.Npm ->
+            let res =
+                CreateProcess.fromRawCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
+                |> CreateProcess.redirectOutput
+                |> CreateProcess.ensureExitCode
+                |> Proc.run
+
+            Decode.unsafeFromString (Decode.list Decode.string) res.Result.Output
+
+        | NodeManager.Yarn ->
+            let res =
+                CreateProcess.fromRawCommand "yarn" [ "info"; pkg.Name; "versions"; "--json" ]
+                |> CreateProcess.redirectOutput
+                |> CreateProcess.ensureExitCode
+                |> Proc.run
+
+            Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
+
+    let maxSatisfyingVersion =
+        pkg.Constraint
+        |> Option.bind (fun range ->
+            if pkg.LowestMatching then
+                packageVersions
+                |> Seq.cast<string>
+                |> range.Satisfying
+                |> Seq.tryHead
+            else
+                packageVersions
+                |> Seq.cast<string>
+                |> range.MaxSatisfying
+                |> function
+                    | null -> None
+                    | version -> Some version
+        )
+
+    match maxSatisfyingVersion with
+    | Some maxSatisfyingVersion ->
+        let hint =
+            sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name maxSatisfyingVersion
+
+        logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
+
+    | None ->
+        ()
+
+let rec checkPackages
+    (nodeManager : NodeManager)
+    (library : LibraryWithNpmDeps)
+    (packagesToVerify : NpmDependency list)
     (installedPackages : ResizeArray<InstalledNpmPackage>)
-    (libraryName : string)
     (isOk : bool) =
 
-    match packages with
+    match packagesToVerify with
     | pkg::rest ->
         logger.Information("")
         let installed = installedPackages |> Seq.tryFind (fun p -> p.Name = pkg.Name)
         let result =
             match installed with
             | None ->
-                logger.Error("{Library} depends on npm package '{Package}'", libraryName, pkg.Name, pkg.RawVersion)
+                logger.Error("{Library} depends on npm package '{Package}'", library.Name, pkg.Name, pkg.RawVersion)
                 logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
                 logger.Error("  | -- Missing '{package}' in package.json", pkg.Name)
-                if pkg.InstallHint <> ""
-                then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
-
+                printInstallHint nodeManager library pkg
                 false
 
             | Some installedPackage  ->
                 match installedPackage.Range, installedPackage.Installed with
                 | Some range, Some version ->
-                    logger.Information("{Library} depends on npm package '{Package}'", libraryName, pkg.Name);
+                    logger.Information("{Library} depends on npm package '{Package}'", library.Name, pkg.Name);
                     logger.Information("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
                     logger.Information("  | -- Used range {Range} in package.json", range.ToString())
                     match pkg.Constraint with
@@ -127,29 +210,29 @@ let rec checkPackage
 
                     | _ ->
                         logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                        if pkg.InstallHint <> ""
-                        then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
+                        printInstallHint nodeManager library pkg
                         false
 
                 | _ ->
-                    logger.Error("{Library} requires npm package '{Package}' ({Version}) which was not installed", libraryName, pkg.Name, pkg.Constraint.ToString())
+                    logger.Error("{Library} requires npm package '{Package}' ({Version}) which was not installed", library.Name, pkg.Name, pkg.Constraint.ToString())
                     false
 
-        checkPackage rest installedPackages libraryName (isOk && result)
+        checkPackages nodeManager library rest installedPackages (isOk && result)
     | [] ->
         isOk
 
 let rec analyzePackages
-    (npmDependencies : (string * string * NpmDependency list) list)
+    (nodeManager : NodeManager)
+    (libraries : LibraryWithNpmDeps list)
     (installedPackages : ResizeArray<InstalledNpmPackage>)
     (isOk : bool) =
 
-    match npmDependencies with
-    | (path, libraryName, packages)::rest ->
+    match libraries with
+    | library::rest ->
         let result =
-            checkPackage packages installedPackages libraryName true
+            checkPackages nodeManager library library.NpmDependencies installedPackages true
 
-        analyzePackages rest installedPackages (isOk && result)
+        analyzePackages nodeManager rest installedPackages (isOk && result)
     | [] ->
         isOk
 
@@ -170,14 +253,14 @@ let main argv =
 
     logger.Information("Analyzing project {Project}", project)
     let projectInfo = ProjectCracker.fullCrack project
-    let npmDependencies = findNpmDependencies projectInfo
+    let libraries = findLibraryWithNpmDeps projectInfo
 
     let result =
         match findPackageJson project with
         | None ->
-            for (path, name, packages) in npmDependencies do
-                for pkg in packages do
-                    logger.Information("{Library} requires npm package {Package} ({Version})", name, pkg.Name, pkg.RawVersion)
+            for library in libraries do
+                for pkg in library.NpmDependencies do
+                    logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
             logger.Warning "Could not locate package.json file"
 
             FemtoResult.MissingPackageJson
@@ -192,8 +275,9 @@ let main argv =
 
             | None ->
                 let installedPackages = findInstalledPackages packageJson
+                let nodeManager = workspaceCommand packageJson
 
-                if analyzePackages npmDependencies installedPackages true then
+                if analyzePackages nodeManager libraries installedPackages true then
                     FemtoResult.ValidationSucceeded
                 else
                     FemtoResult.ValidationFailed
