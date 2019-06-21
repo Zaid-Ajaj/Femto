@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <ToolCommandName>femto</ToolCommandName>
+    <PackAsTool>true</PackAsTool>
+    <IsPackable>true</IsPackable>
+    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <Version>0.1.0</Version>
+    <PackageVersion>0.1.0</PackageVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="Npm.fs" />
+    <Compile Include="Prelude.fs" />
+    <Compile Include="Util.fs" />
+    <Compile Include="ProjectCoreCracker.fs" />
+    <Compile Include="ProjectCracker.fs" />
+    <Compile Include="Program.fs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Dotnet.ProjInfo" Version="0.35.0" />
+    <PackageReference Include="FSharp.Compiler.Service" Version="29.0.1" />
+    <PackageReference Include="Newtonsoft.Json" Version="12.0.2" />
+    <PackageReference Include="SemanticVersioning" Version="1.2.0" />
+    <PackageReference Include="Serilog" Version="2.8.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="3.1.1" />
+  </ItemGroup>
+</Project>
