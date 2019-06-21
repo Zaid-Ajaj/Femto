@@ -34,8 +34,20 @@ In order for Femto to pick up the npm packages that your library depends upon, y
 ```xml
 <PropertyGroup>
   <NpmDependencies>
-      <NpmPackage Name="date-fns" Version=">= 1.30.0" InstallHint="npm install date-fns@1.30" />
+      <NpmPackage Name="date-fns" Version=">= 1.30.0" />
   </NpmDependencies>
 </PropertyGroup>
 ```
-Notice here in the example, we have one npm package we depend upon which has requires a version that satisfies that range `>= 1.30.0`. If the user doesn't have that version installed or has an old version, a message will appear telling them how to solve the issue by running the command given in the `InstallHint`
+Notice here in the example, we have one npm package we depend upon which has requires a version that satisfies that range `>= 1.30.0`. If the user doesn't have that version installed or has an old version, a message will appear telling them how to solve the issue.
+
+--------
+
+You can customize the resolution strategy by adding `ResolutionStrategy` attribute to an `NpmPackage` node. Accepted values are `min` and `max`. If `ResolutionStrategy` is not set, we default to `min` strategy.
+
+```xml
+<PropertyGroup>
+  <NpmDependencies>
+      <NpmPackage Name="date-fns" Version=">= 1.30.0" ResolutionStrategy="max" />
+  </NpmDependencies>
+</PropertyGroup>
+```

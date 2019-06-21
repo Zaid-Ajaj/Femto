@@ -15,7 +15,6 @@ type LibraryWithNpmDeps = {
     Path : string
     Name : string
     NpmDependencies : NpmDependency list
-    LowestMatching : bool
 }
 
 let findLibraryWithNpmDeps (project: CrackedFsproj) =
@@ -23,11 +22,10 @@ let findLibraryWithNpmDeps (project: CrackedFsproj) =
       yield! project.ProjectReferences
       for package in project.PackageReferences do yield package.FsprojPath ]
     |> List.map (fun proj ->
-        let (lowestMatching, npmDeps) = Npm.parseDependencies (Path.normalizeFullPath proj)
+        let npmDeps = Npm.parseDependencies (Path.normalizeFullPath proj)
         {
             Path = proj
             Name = Path.GetFileNameWithoutExtension proj
-            LowestMatching = lowestMatching
             NpmDependencies = npmDeps
         }
     )
@@ -154,28 +152,19 @@ let private printInstallHint (nodeManager : NodeManager) (library : LibraryWithN
 
     let maxSatisfyingVersion =
         pkg.Constraint
-        |> Option.map (fun range ->
-            let lowestMatching =
-                // Can we resolve this using Boolean algebra?
-                match pkg.LowestMatching with
-                | Some pkgLowestMatching ->
-                    if library.LowestMatching <> pkgLowestMatching then
-                        logger.Information("  | -- Resolution strategy override to lowest matching: {Strategy}", pkgLowestMatching)
-                        pkgLowestMatching
-                    else
-                        library.LowestMatching
-                | None ->
-                    library.LowestMatching
-
-            if lowestMatching then
+        |> Option.bind (fun range ->
+            if pkg.LowestMatching then
                 packageVersions
                 |> Seq.cast<string>
                 |> range.Satisfying
-                |> Seq.head
+                |> Seq.tryHead
             else
                 packageVersions
                 |> Seq.cast<string>
                 |> range.MaxSatisfying
+                |> function
+                    | null -> None
+                    | version -> Some version
         )
 
     match maxSatisfyingVersion with
@@ -184,7 +173,9 @@ let private printInstallHint (nodeManager : NodeManager) (library : LibraryWithN
             sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name maxSatisfyingVersion
 
         logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
-    | None -> ()
+
+    | None ->
+        ()
 
 let rec checkPackages
     (nodeManager : NodeManager)
@@ -238,8 +229,6 @@ let rec analyzePackages
 
     match libraries with
     | library::rest ->
-        logger.Information("Resolution strategy for {Library} is lowest matching: {LowestMatching}", library.Name, library.LowestMatching)
-
         let result =
             checkPackages nodeManager library library.NpmDependencies installedPackages true
 

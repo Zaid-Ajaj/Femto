@@ -11,7 +11,7 @@ type NpmDependency = {
     Name: string
     Constraint: Range option
     RawVersion : string
-    LowestMatching : bool option
+    LowestMatching : bool
 }
 
 type InstalledNpmPackage = {
@@ -42,17 +42,17 @@ let attr (name: string) (node: XmlNode)  =
     tryAttr name node
     |> Option.defaultValue ""
 
-let tryBoolAttr (name : string) (node : XmlNode) =
-    tryAttr name node
+let private parseResolutionStrategy (node : XmlNode) =
+    tryAttr "ResolutionStrategy" node
     |> Option.map (fun value ->
-        match System.Boolean.TryParse(value) with
-        | true, res ->
-            res
-
-        | false, _ ->
-            logger.Warning("Invalid value for '{AttributeName}' attribute. Accepted values are 'true' or 'false'", name)
+        match value.ToLower() with
+        | "min" -> true
+        | "max" -> false
+        | _ ->
+            logger.Warning("Invalid value for 'ResolutionStrategy' attribute, accepted values are 'min' or 'max'. Using 'min' as default")
             true
     )
+    |> Option.defaultValue true
 
 let parseDependencies (project: string) =
     try
@@ -61,17 +61,6 @@ let parseDependencies (project: string) =
         let npmDependencies = elementsByTag doc.DocumentElement "NpmDependencies"
         match npmDependencies with
         | [ rootNode ] ->
-            let lowestMatching =
-                "Strategy"
-                |> elementsByTag (rootNode :?> XmlElement)
-                |> List.tryHead
-                |> function
-                    | Some head ->
-                        head
-                        |> tryBoolAttr "LowestMatching"
-                        |> Option.defaultValue true
-                    | None -> true
-
             let npmPackages =
                 "NpmPackage"
                 |> elementsByTag (rootNode :?> XmlElement)
@@ -79,14 +68,14 @@ let parseDependencies (project: string) =
                         Name = attr "Name" node;
                         RawVersion = attr "Version" node
                         Constraint = parseConstraint (attr "Version" node)
-                        LowestMatching = tryBoolAttr "LowestMatching" node
+                        LowestMatching = parseResolutionStrategy node
                     })
 
-            lowestMatching, npmPackages
+            npmPackages
         | _ ->
-            true, []
+            []
     with
         | ex ->
             logger.Error("An error occured when parsing for dependencies")
             logger.Error(ex.Message)
-            true, []
+            []
