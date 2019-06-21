@@ -64,9 +64,13 @@ let parseDependencies (project: string) =
             let lowestMatching =
                 "Strategy"
                 |> elementsByTag (rootNode :?> XmlElement)
-                |> List.head
-                |> tryBoolAttr "LowestMatching"
-                |> Option.defaultValue true
+                |> List.tryHead
+                |> function
+                    | Some head ->
+                        head
+                        |> tryBoolAttr "LowestMatching"
+                        |> Option.defaultValue true
+                    | None -> true
 
             let npmPackages =
                 "NpmPackage"
@@ -83,4 +87,6 @@ let parseDependencies (project: string) =
             true, []
     with
         | ex ->
+            logger.Error("An error occured when parsing for dependencies")
+            logger.Error(ex.Message)
             true, []
