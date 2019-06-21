@@ -25,6 +25,16 @@ let rec findPackageJson (project: string) =
       |> Seq.tryFind (fun file -> file.EndsWith "package.json")
       |> Option.orElse (findPackageJson parentDir.FullName)
 
+let workspaceCommand (packageJson: string) =
+    let parentDir = IO.Directory.GetParent packageJson
+    let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
+    let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
+    let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
+    let packageLockExists = siblings |> List.exists (fun file -> file.EndsWith "package-lock.json")
+    if nodeModulesExists then "npm"
+    elif yarnLockExists then "yarn"
+    else "npm"
+
 let needsNodeModules (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
@@ -93,7 +103,30 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
     | _ ->
         topLevelPackages
 
+let private printInstallHint (commandName : string) (pkg : NpmDependency) =
+
+    let packageVersions =
+        NpmRegistry.fetchVersions pkg.Name
+        |> Async.RunSynchronously
+
+    let maxSatisfyingVersion =
+        pkg.Constraint
+        |> Option.map (fun range ->
+            packageVersions
+            |> Seq.cast<string>
+            |> range.MaxSatisfying
+        )
+
+    match maxSatisfyingVersion with
+    | Some maxSatisfyingVersion ->
+        let hint =
+            sprintf "%s install %s@%s" commandName pkg.Name maxSatisfyingVersion
+
+        logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
+    | None -> ()
+
 let rec checkPackage
+    (commandName : string)
     (packages : NpmDependency list)
     (installedPackages : ResizeArray<InstalledNpmPackage>)
     (libraryName : string)
@@ -109,8 +142,8 @@ let rec checkPackage
                 logger.Error("{Library} depends on npm package '{Package}'", libraryName, pkg.Name, pkg.RawVersion)
                 logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
                 logger.Error("  | -- Missing '{package}' in package.json", pkg.Name)
-                if pkg.InstallHint <> ""
-                then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
+
+                printInstallHint commandName pkg
 
                 false
 
@@ -127,19 +160,19 @@ let rec checkPackage
 
                     | _ ->
                         logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                        if pkg.InstallHint <> ""
-                        then logger.Error("  | -- Resolve this issue using {Hint}", pkg.InstallHint)
+                        printInstallHint commandName pkg
                         false
 
                 | _ ->
                     logger.Error("{Library} requires npm package '{Package}' ({Version}) which was not installed", libraryName, pkg.Name, pkg.Constraint.ToString())
                     false
 
-        checkPackage rest installedPackages libraryName (isOk && result)
+        checkPackage commandName rest installedPackages libraryName (isOk && result)
     | [] ->
         isOk
 
 let rec analyzePackages
+    (commandName : string)
     (npmDependencies : (string * string * NpmDependency list) list)
     (installedPackages : ResizeArray<InstalledNpmPackage>)
     (isOk : bool) =
@@ -147,9 +180,9 @@ let rec analyzePackages
     match npmDependencies with
     | (path, libraryName, packages)::rest ->
         let result =
-            checkPackage packages installedPackages libraryName true
+            checkPackage commandName packages installedPackages libraryName true
 
-        analyzePackages rest installedPackages (isOk && result)
+        analyzePackages commandName rest installedPackages (isOk && result)
     | [] ->
         isOk
 
@@ -192,8 +225,9 @@ let main argv =
 
             | None ->
                 let installedPackages = findInstalledPackages packageJson
+                let commandToUse = workspaceCommand packageJson
 
-                if analyzePackages npmDependencies installedPackages true then
+                if analyzePackages commandToUse npmDependencies installedPackages true then
                     FemtoResult.ValidationSucceeded
                 else
                     FemtoResult.ValidationFailed
