@@ -160,7 +160,7 @@ let private printInstallHint (nodeManager : NodeManager) (library : LibraryWithN
                 match pkg.LowestMatching with
                 | Some pkgLowestMatching ->
                     if library.LowestMatching <> pkgLowestMatching then
-                        logger.Information("  | -- Resolution strategy override to lowest matching: {Strategy}", pkg.LowestMatching)
+                        logger.Information("  | -- Resolution strategy override to lowest matching: {Strategy}", pkgLowestMatching)
                         pkgLowestMatching
                     else
                         library.LowestMatching
