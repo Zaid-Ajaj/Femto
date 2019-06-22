@@ -127,8 +127,7 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
     | _ ->
         topLevelPackages
 
-let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
-
+let getSatisfyingPackageVersion (nodeManager: NodeManager) (pkg : NpmDependency) =
     let packageVersions =
         match nodeManager with
         | NodeManager.Npm ->
@@ -159,22 +158,25 @@ let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
 
             Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
 
-    let satisfyingVersion =
-        pkg.Constraint
-        |> Option.bind (fun range ->
-            if pkg.LowestMatching then
-                packageVersions
-                |> Seq.ofList
-                |> range.Satisfying
-                |> Seq.tryHead
-            else
-                packageVersions
-                |> Seq.ofList
-                |> range.MaxSatisfying
-                |> function
-                    | null -> None
-                    | version -> Some version
-        )
+    pkg.Constraint
+    |> Option.bind (fun range ->
+        if pkg.LowestMatching then
+            packageVersions
+            |> Seq.ofList
+            |> range.Satisfying
+            |> Seq.tryHead
+        else
+            packageVersions
+            |> Seq.ofList
+            |> range.MaxSatisfying
+            |> function
+                | null -> None
+                | version -> Some version
+    )
+
+let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
+
+    let satisfyingVersion = getSatisfyingPackageVersion nodeManager pkg
 
     match satisfyingVersion with
     | Some version ->
@@ -247,50 +249,124 @@ let rec analyzePackages
     | [] ->
         isOk
 
+type FemtoArgs = {
+    Project: string option
+    PreviewMetadata: bool
+}
+
+let (|FullPath|_|) project =
+    if Path.isRelativePath project
+    then Some (Path.GetFullPath project)
+    else Some project
+
+let (|BoolArg|_|) (input: string) =
+    match input.ToLower() with
+    | "true" -> Some true
+    | "false" -> Some false
+    | _ -> None
+
+let rec parseComplexArgs defaultArgs = function
+    | "--project" :: FullPath project :: rest ->
+        let modifiedArgs = { defaultArgs with Project = Some project }
+        parseComplexArgs modifiedArgs rest
+
+    | "--preview-metadata" :: BoolArg value :: rest ->
+        let modifiedArgs = { defaultArgs with PreviewMetadata = value }
+        parseComplexArgs modifiedArgs rest
+
+    | "--preview-metadata" :: rest ->
+        let modifiedArgs = { defaultArgs with PreviewMetadata = true }
+        parseComplexArgs modifiedArgs rest
+
+    | FullPath project :: rest ->
+        let modifiedArgs = {defaultArgs with Project = Some project }
+        parseComplexArgs modifiedArgs rest
+
+    | _ ->
+        defaultArgs
+
+let defaultCliArgs = {
+    Project = None
+    PreviewMetadata = false
+}
+
+let parseArgs = function
+    | [ ] ->
+        let cwd = Environment.CurrentDirectory
+        let siblings = IO.Directory.GetFiles cwd
+        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
+        | Some file -> { defaultCliArgs with Project = Some file;  }
+        | None -> defaultCliArgs
+
+    | [ "--preview-metadata" ] ->
+        let cwd = Environment.CurrentDirectory
+        let siblings = IO.Directory.GetFiles cwd
+        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
+        | Some file -> { defaultCliArgs with Project = Some file; PreviewMetadata = true }
+        | None -> { defaultCliArgs with Project = None; PreviewMetadata = true }
+
+    | complexArgs ->
+        parseComplexArgs defaultCliArgs complexArgs
+
 [<EntryPoint>]
 let main argv =
-    let project =
-        match argv with
-        | [| |]  ->
-            let cwd = Environment.CurrentDirectory
-            let siblings = IO.Directory.GetFiles cwd
-            match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
-            | Some file -> file
-            | None -> failwith "This directory does not contain any F# projects"
-        | args ->
-            if Path.isRelativePath args.[0]
-            then Path.GetFullPath args.[0]
-            else args.[0]
+    let args = parseArgs (List.ofArray argv)
 
-    logger.Information("Analyzing project {Project}", project)
-    let projectInfo = ProjectCracker.fullCrack project
-    let libraries = findLibraryWithNpmDeps projectInfo
+    match args.Project, args.PreviewMetadata with
+    | None, _ ->
+        logger.Error("Project path was not correctly provided")
+        int FemtoResult.ProjectFileNotFound
 
-    let result =
-        match findPackageJson project with
-        | None ->
-            for library in libraries do
-                for pkg in library.NpmDependencies do
-                    logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
-            logger.Warning "Could not locate package.json file"
+    | Some project, true ->
+        // only preview dependencies
+        logger.Information("Previewing Npm dependencies for {Project}", project)
+        let libraryName = Path.GetFileNameWithoutExtension project
+        let npmDependencies = Npm.parseDependencies project
+        if List.isEmpty npmDependencies
+        then
+            logger.Warning("Project {Project} does not contain npm dependency metadata", libraryName)
+            int FemtoResult.ValidationSucceeded
+        else
+        for pkg in npmDependencies do
+            logger.Information("{Library} requires npm package {Package}", libraryName, pkg.Name)
+            logger.Information("  | -- Required range {Range}", pkg.RawVersion)
+            logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
+            match getSatisfyingPackageVersion NodeManager.Npm pkg with
+            | Some version -> logger.Information("  | -- Version {Version} satisfies required range", version)
+            | None -> logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
 
-            FemtoResult.MissingPackageJson
+        int FemtoResult.ValidationSucceeded
 
-        | Some packageJson ->
-            match needsNodeModules packageJson with
-            | Some command ->
-                logger.Information("Npm packages need to be restored first")
-                logger.Information("Restore npm packages using {Command}", command)
+    | Some project, false ->
+        logger.Information("Analyzing project {Project}", project)
+        let projectInfo = ProjectCracker.fullCrack project
+        let libraries = findLibraryWithNpmDeps projectInfo
 
-                FemtoResult.NodeModulesNotInstalled
-
+        let result =
+            match findPackageJson project with
             | None ->
-                let installedPackages = findInstalledPackages packageJson
-                let nodeManager = workspaceCommand packageJson
+                for library in libraries do
+                    for pkg in library.NpmDependencies do
+                        logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
+                logger.Warning "Could not locate package.json file"
 
-                if analyzePackages nodeManager libraries installedPackages true then
-                    FemtoResult.ValidationSucceeded
-                else
-                    FemtoResult.ValidationFailed
+                FemtoResult.MissingPackageJson
 
-    int result
+            | Some packageJson ->
+                match needsNodeModules packageJson with
+                | Some command ->
+                    logger.Information("Npm packages need to be restored first")
+                    logger.Information("Restore npm packages using {Command}", command)
+
+                    FemtoResult.NodeModulesNotInstalled
+
+                | None ->
+                    let installedPackages = findInstalledPackages packageJson
+                    let nodeManager = workspaceCommand packageJson
+
+                    if analyzePackages nodeManager libraries installedPackages true then
+                        FemtoResult.ValidationSucceeded
+                    else
+                        FemtoResult.ValidationFailed
+
+        int result
