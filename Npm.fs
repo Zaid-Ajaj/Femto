@@ -54,6 +54,14 @@ let private parseResolutionStrategy (node : XmlNode) =
     )
     |> Option.defaultValue true
 
+let preprocessVersion (input: string)  =
+    input
+      .ToLower()
+      .Replace("gte", ">=")
+      .Replace("gt", ">")
+      .Replace("lt", "<")
+      .Replace("lte", "<=")
+
 let parseDependencies (project: string) =
     try
         let doc = XmlDocument()
@@ -66,8 +74,8 @@ let parseDependencies (project: string) =
                 |> elementsByTag (rootNode :?> XmlElement)
                 |> List.map (fun node -> {
                         Name = attr "Name" node;
-                        RawVersion = attr "Version" node
-                        Constraint = parseConstraint (attr "Version" node)
+                        RawVersion = preprocessVersion (attr "Version" node)
+                        Constraint = parseConstraint (preprocessVersion (attr "Version" node))
                         LowestMatching = parseResolutionStrategy node
                     })
 
