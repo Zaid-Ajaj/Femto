@@ -4,7 +4,7 @@
     <ToolCommandName>femto</ToolCommandName>
     <PackAsTool>true</PackAsTool>
     <IsPackable>true</IsPackable>
-    <TargetFramework>netcoreapp3.0</TargetFramework>
+    <TargetFramework>netcoreapp2.2</TargetFramework>
     <Version>0.1.0</Version>
     <PackageVersion>0.1.0</PackageVersion>
   </PropertyGroup>
