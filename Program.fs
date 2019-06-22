@@ -8,6 +8,7 @@ open FSharp.Compiler.AbstractIL.Internal.Library
 open System.Diagnostics
 open Fake.Core
 open Thoth.Json.Net
+open Fake.SystemHelper
 
 let logger = LoggerConfiguration().WriteTo.Console().CreateLogger()
 
@@ -55,7 +56,6 @@ let workspaceCommand (packageJson: string) =
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
     let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
     let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
-    let packageLockExists = siblings |> List.exists (fun file -> file.EndsWith "package-lock.json")
     if nodeModulesExists then NodeManager.Npm
     elif yarnLockExists then NodeManager.Yarn
     else NodeManager.Npm
@@ -65,7 +65,6 @@ let needsNodeModules (packageJson: string) =
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
     let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
     let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
-    let packageLockExists = siblings |> List.exists (fun file -> file.EndsWith "package-lock.json")
     if nodeModulesExists then None
     elif yarnLockExists then Some "yarn install"
     else Some "npm install"
@@ -128,13 +127,18 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
     | _ ->
         topLevelPackages
 
-let private printInstallHint (nodeManager : NodeManager) (library : LibraryWithNpmDeps) (pkg : NpmDependency) =
+let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
 
     let packageVersions =
         match nodeManager with
         | NodeManager.Npm ->
+            let program, args =
+                if Environment.isWindows
+                then "cmd", [ "/C"; "npm"; "show"; pkg.Name; "versions"; "--json" ]
+                else "npm", [ "show"; pkg.Name; "versions"; "--json" ]
+
             let res =
-                CreateProcess.fromRawCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
+                CreateProcess.fromRawCommand program args
                 |> CreateProcess.redirectOutput
                 |> CreateProcess.ensureExitCode
                 |> Proc.run
@@ -142,35 +146,42 @@ let private printInstallHint (nodeManager : NodeManager) (library : LibraryWithN
             Decode.unsafeFromString (Decode.list Decode.string) res.Result.Output
 
         | NodeManager.Yarn ->
+            let program, args =
+                if Environment.isWindows
+                then "cmd", [ "/C"; "yarn"; "info"; pkg.Name; "versions"; "--json" ]
+                else "yarn", [ "info"; pkg.Name; "versions"; "--json" ]
+
             let res =
-                CreateProcess.fromRawCommand "yarn" [ "info"; pkg.Name; "versions"; "--json" ]
+                CreateProcess.fromRawCommand program args
                 |> CreateProcess.redirectOutput
                 |> CreateProcess.ensureExitCode
                 |> Proc.run
 
             Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
 
-    let maxSatisfyingVersion =
+    let satisfyingVersion =
         pkg.Constraint
         |> Option.bind (fun range ->
             if pkg.LowestMatching then
                 packageVersions
-                |> Seq.cast<string>
+                |> Seq.ofList
                 |> range.Satisfying
                 |> Seq.tryHead
             else
                 packageVersions
-                |> Seq.cast<string>
+                |> Seq.ofList
                 |> range.MaxSatisfying
                 |> function
                     | null -> None
                     | version -> Some version
         )
 
-    match maxSatisfyingVersion with
-    | Some maxSatisfyingVersion ->
+    match satisfyingVersion with
+    | Some version ->
         let hint =
-            sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name maxSatisfyingVersion
+            match nodeManager with
+            | NodeManager.Npm -> sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name version
+            | NodeManager.Yarn -> sprintf "%s add %s@%s" nodeManager.CommandName pkg.Name version
 
         logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
 
@@ -194,7 +205,7 @@ let rec checkPackages
                 logger.Error("{Library} depends on npm package '{Package}'", library.Name, pkg.Name, pkg.RawVersion)
                 logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
                 logger.Error("  | -- Missing '{package}' in package.json", pkg.Name)
-                printInstallHint nodeManager library pkg
+                printInstallHint nodeManager pkg
                 false
 
             | Some installedPackage  ->
@@ -210,7 +221,7 @@ let rec checkPackages
 
                     | _ ->
                         logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                        printInstallHint nodeManager library pkg
+                        printInstallHint nodeManager pkg
                         false
 
                 | _ ->
