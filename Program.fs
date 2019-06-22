@@ -270,11 +270,11 @@ let rec parseComplexArgs defaultArgs = function
         let modifiedArgs = { defaultArgs with Project = Some project }
         parseComplexArgs modifiedArgs rest
 
-    | "--preview-metadata" :: BoolArg value :: rest ->
+    | "--validate" :: BoolArg value :: rest ->
         let modifiedArgs = { defaultArgs with PreviewMetadata = value }
         parseComplexArgs modifiedArgs rest
 
-    | "--preview-metadata" :: rest ->
+    | "--validate" :: rest ->
         let modifiedArgs = { defaultArgs with PreviewMetadata = true }
         parseComplexArgs modifiedArgs rest
 
@@ -298,7 +298,7 @@ let parseArgs = function
         | Some file -> { defaultCliArgs with Project = Some file;  }
         | None -> defaultCliArgs
 
-    | [ "--preview-metadata" ] ->
+    | [ "--validate" ] ->
         let cwd = Environment.CurrentDirectory
         let siblings = IO.Directory.GetFiles cwd
         match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
@@ -319,27 +319,75 @@ let rec main argv =
 
     | Some project, true ->
         // only preview dependencies
-        logger.Information("Previewing Npm dependencies for {Project}", project)
+        logger.Information("Validating project {Project}", project)
+        logger.Information("Running {Command} against the project", "dotnet restore")
+        let program, args =
+            if Environment.isWindows
+            then "cmd", [ "/C"; "dotnet"; "restore" ]
+            else "dotnet", [ "restore" ]
+
+        let restoreResult =
+            let processOutput =
+                CreateProcess.fromRawCommand program args
+                |> CreateProcess.withWorkingDirectory ((IO.Directory.GetParent project).FullName)
+                |> CreateProcess.redirectOutput
+                |> Proc.run
+
+            if processOutput.ExitCode <> 0
+            then Error processOutput.Result.Output
+            else Ok ()
+
+        match restoreResult with
+        | Error error ->
+            logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
+            int FemtoResult.ValidationFailed
+        | Ok () ->
+
+        logger.Information("Ensuring project can be analyzed")
+        let crackResult =
+            try
+                let projectInfo = ProjectCracker.fullCrack project
+                Ok projectInfo
+            with
+            | ex -> Error ex.Message
+
+        match crackResult with
+        | Error er ->
+            logger.Error("Error while analyzing the project's structure and dependencies")
+            int FemtoResult.ValidationFailed
+        | Ok _ ->
         let libraryName = Path.GetFileNameWithoutExtension project
         let npmDependencies = Npm.parseDependencies project
         if List.isEmpty npmDependencies
         then
             logger.Warning("Project {Project} does not contain npm dependency metadata", libraryName)
-            int FemtoResult.ValidationSucceeded
+            int FemtoResult.ProjectCrackerFailed
         else
         for pkg in npmDependencies do
             logger.Information("{Library} requires npm package {Package}", libraryName, pkg.Name)
             logger.Information("  | -- Required range {Range}", pkg.RawVersion)
             logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
             match getSatisfyingPackageVersion NodeManager.Npm pkg with
-            | Some version -> logger.Information("  | -- Version {Version} satisfies required range", version)
-            | None -> logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
+            | Some version ->
+                logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
+            | None ->
+                logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
 
         int FemtoResult.ValidationSucceeded
 
     | Some project, false ->
         logger.Information("Analyzing project {Project}", project)
-        let projectInfo = ProjectCracker.fullCrack project
+        let projectInfo =
+            try Ok (ProjectCracker.fullCrack project)
+            with | ex ->
+                Error ex.Message
+
+        match projectInfo with
+        | Error errorMessage ->
+            logger.Error("Error while analyzing project structure and dependencies")
+            int FemtoResult.ProjectCrackerFailed
+        | Ok projectInfo ->
+
         let libraries = findLibraryWithNpmDeps projectInfo
 
         let result =

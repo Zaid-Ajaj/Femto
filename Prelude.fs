@@ -6,7 +6,9 @@ type FemtoResult =
     | NodeModulesNotInstalled = 2
     | ValidationFailed = 3
     | ProjectFileNotFound = 4
-    | UnexpectedError = 5
+    | ProjectCrackerFailed = 5
+    | UnexpectedError = -1
+
 
 module FemtoResult =
     let fromCode = function
@@ -15,6 +17,7 @@ module FemtoResult =
     | 2 -> FemtoResult.NodeModulesNotInstalled
     | 3 -> FemtoResult.ValidationFailed
     | 4 -> FemtoResult.ProjectFileNotFound
+    | 5 -> FemtoResult.ProjectCrackerFailed
     | n -> FemtoResult.UnexpectedError
 
 
