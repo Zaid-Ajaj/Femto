@@ -309,7 +309,7 @@ let parseArgs = function
         parseComplexArgs defaultCliArgs complexArgs
 
 [<EntryPoint>]
-let main argv =
+let rec main argv =
     let args = parseArgs (List.ofArray argv)
 
     match args.Project, args.PreviewMetadata with
@@ -353,12 +353,44 @@ let main argv =
                 FemtoResult.MissingPackageJson
 
             | Some packageJson ->
+                logger.Information("Found package.json in {Dir}", (IO.Directory.GetParent packageJson).FullName)
                 match needsNodeModules packageJson with
                 | Some command ->
-                    logger.Information("Npm packages need to be restored first")
-                    logger.Information("Restore npm packages using {Command}", command)
+                    logger.Information("Npm packages need to be restored first for project analysis")
+                    let nodeManager = workspaceCommand packageJson
+                    let workingDirectory = IO.Directory.GetParent packageJson
+                    match nodeManager with
+                    | NodeManager.Npm ->
+                        logger.Information("Restoring npm packages using 'npm install' inside {Dir}", (IO.Directory.GetParent packageJson).FullName)
+                        let program, args =
+                            if Environment.isWindows
+                            then "cmd", [ "/C"; "npm"; "install" ]
+                            else "npm", [ "install" ]
 
-                    FemtoResult.NodeModulesNotInstalled
+                        CreateProcess.fromRawCommand program args
+                        |> CreateProcess.withWorkingDirectory workingDirectory.FullName
+                        |> CreateProcess.redirectOutput
+                        |> CreateProcess.ensureExitCode
+                        |> Proc.run
+                        |> ignore
+
+                        FemtoResult.fromCode (main argv)
+
+                    | NodeManager.Yarn ->
+                        logger.Information("Restoring npm packages using 'yarn install' inside {Dir}", (IO.Directory.GetParent packageJson).FullName)
+                        let program, args =
+                            if Environment.isWindows
+                            then "cmd", [ "/C"; "yarn"; "install" ]
+                            else "yarn", [ "install" ]
+
+                        CreateProcess.fromRawCommand program args
+                        |> CreateProcess.withWorkingDirectory workingDirectory.FullName
+                        |> CreateProcess.redirectOutput
+                        |> CreateProcess.ensureExitCode
+                        |> Proc.run
+                        |> ignore
+
+                        FemtoResult.fromCode (main argv)
 
                 | None ->
                     let installedPackages = findInstalledPackages packageJson

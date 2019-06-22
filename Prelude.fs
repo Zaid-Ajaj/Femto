@@ -6,6 +6,17 @@ type FemtoResult =
     | NodeModulesNotInstalled = 2
     | ValidationFailed = 3
     | ProjectFileNotFound = 4
+    | UnexpectedError = 5
+
+module FemtoResult =
+    let fromCode = function
+    | 0 -> FemtoResult.ValidationSucceeded
+    | 1 -> FemtoResult.MissingPackageJson
+    | 2 -> FemtoResult.NodeModulesNotInstalled
+    | 3 -> FemtoResult.ValidationFailed
+    | 4 -> FemtoResult.ProjectFileNotFound
+    | n -> FemtoResult.UnexpectedError
+
 
 type ResizeArrayDictionary<'K, 'V when 'K : equality>() =
     let dic = System.Collections.Generic.Dictionary<'K, ResizeArray<'V>>()
