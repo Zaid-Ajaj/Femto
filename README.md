@@ -7,7 +7,7 @@ Femto is an experimental CLI tool that verifies the compatibility of npm package
 dotnet tool install femto --global
 ```
 
-### Usage
+### Project Dependency Analysis
 Simply `cd` your way to the directory where you have your Fable application and run
 ```bash
 femto

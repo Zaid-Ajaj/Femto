@@ -654,6 +654,7 @@ let rec main argv =
                                 FemtoResult.UnexpectedError
                     else
                     if analyzePackages nodeManager libraries installedPackages true then
+                        logger.Information("√ Project analysis complete")
                         FemtoResult.ValidationSucceeded
                     else
                         FemtoResult.ValidationFailed
