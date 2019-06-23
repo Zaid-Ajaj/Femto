@@ -1,4 +1,4 @@
-# Femto
+# Femto  [![Nuget](https://img.shields.io/nuget/v/Femto.svg?colorB=green)](https://www.nuget.org/packages/Femto)
 
 Femto is an experimental CLI tool that verifies the compatibility of npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings.
 
@@ -26,6 +26,22 @@ c:\>femto ./App.fsproj
 [01:36:34 INF]   | -- Used range ^1.28.2 in package.json
 [01:36:34 ERR]   | -- Installed version 1.29.0 does not satisfy required range >= 1.30.0
 [01:36:34 ERR]   | -- Resolve this issue using 'npm install date-fns@1.31.0'
+```
+
+### Automatic Package resolution with `--resolve`
+Femto can automagically resolve required package issues using the command `--resolve`:
+```
+femto --resolve
+
+femto --resolve --project ./src/Client.fsproj
+```
+
+### Preview resolution actions with `--resolve-preview`
+You can see what Femto will attempt to do without actually executing the commands themselves using `--resolve-preview`
+```
+femto --resolve-preview
+
+femto --resolve-preview --project ./src/Client.fsproj
 ```
 
 ### Library Authors
