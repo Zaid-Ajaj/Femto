@@ -9,6 +9,7 @@ open System.Diagnostics
 open Fake.Core
 open Thoth.Json.Net
 open Fake.SystemHelper
+open Fake.SystemHelper
 
 let logger = LoggerConfiguration().WriteTo.Console().CreateLogger()
 
@@ -60,10 +61,9 @@ type NodeManager =
 let workspaceCommand (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
-    let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
     let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
-    if nodeModulesExists then NodeManager.Npm
-    elif yarnLockExists then NodeManager.Yarn
+    if yarnLockExists
+    then NodeManager.Yarn
     else NodeManager.Npm
 
 let needsNodeModules (packageJson: string) =
@@ -424,6 +424,63 @@ let parseArgs = function
     | complexArgs ->
         parseComplexArgs defaultCliArgs complexArgs
 
+let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: ResolveAction list) =
+    let uninstallPackages =
+        actions |> List.choose (function
+        | ResolveAction.Uninstall(_, pkg, _)-> Some pkg
+        | _ -> None)
+
+    let installPackages =
+        actions |> List.choose (function
+        | ResolveAction.Install(_, pkg, version)-> Some (pkg, version)
+        | _ -> None)
+
+    if not (List.isEmpty uninstallPackages) then
+        let program, args =
+            match manager with
+            | NodeManager.Npm ->
+                if Environment.isWindows
+                then "cmd", List.concat [ ["/C"; "npm"; "uninstall" ]; uninstallPackages; [ "--save" ] ]
+                else "npm", List.concat [ [ "uninstall" ]; uninstallPackages; ["--save" ]]
+            | NodeManager.Yarn ->
+                if Environment.isWindows
+                then "cmd", List.append [ "/C"; "yarn"; "remove" ] uninstallPackages
+                else "yarn", List.append [ "remove" ] uninstallPackages
+
+        logger.Information("Uninstalling [{Libraries}]", String.concat ", " uninstallPackages)
+        CreateProcess.fromRawCommand program args
+        |> CreateProcess.withWorkingDirectory cwd
+        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while uninstalling [%s]" (String.concat ", " uninstallPackages))
+        |> CreateProcess.redirectOutput
+        |> Proc.run
+        |> ignore
+
+
+    if not (List.isEmpty installPackages) then
+        let installExpr =
+            installPackages
+            |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
+            |> String.concat " "
+
+        let program, args =
+            match manager with
+            | NodeManager.Npm ->
+                if Environment.isWindows
+                then "cmd", [ "/C"; "npm"; "install"; installExpr; "--save" ]
+                else "npm", [ "install"; installExpr; "--save" ]
+            | NodeManager.Yarn ->
+                if Environment.isWindows
+                then "cmd", [ "/C"; "yarn"; "add"; installExpr ]
+                else "yarn", [ "add"; installExpr ]
+
+        logger.Information("Installing [{Libraryies}]", installExpr)
+        CreateProcess.fromRawCommand program args
+        |> CreateProcess.withWorkingDirectory cwd
+        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" installExpr)
+        |> CreateProcess.redirectOutput
+        |> Proc.run
+        |> ignore
+
 [<EntryPoint>]
 let rec main argv =
     let args = parseArgs (List.ofArray argv)
@@ -560,7 +617,7 @@ let rec main argv =
 
                     let installedPackages = findInstalledPackages packageJson
                     let nodeManager = workspaceCommand packageJson
-
+                    logger.Information("Using {Manager} for package management", nodeManager.CommandName)
                     if args.ResolvePreview then
                         logger.Information("Previewing required actions for package resolution")
                         let resolveActions = autoResolve nodeManager libraries installedPackages []
@@ -586,7 +643,15 @@ let rec main argv =
                             FemtoResult.ValidationSucceeded
                         else
                             logger.Information("Executing required actions for package resolution")
-                            FemtoResult.ValidationSucceeded
+                            try
+                                let cwd = (IO.Directory.GetParent packageJson).FullName
+                                executeResolutionActions cwd nodeManager resolveActions
+                                logger.Information("√ Package resolution complete")
+                                FemtoResult.ValidationSucceeded
+                            with
+                            | ex ->
+                                logger.Error(ex.Message)
+                                FemtoResult.UnexpectedError
                     else
                     if analyzePackages nodeManager libraries installedPackages true then
                         FemtoResult.ValidationSucceeded
