@@ -18,6 +18,12 @@ type LibraryWithNpmDeps = {
     NpmDependencies : NpmDependency list
 }
 
+[<RequireQualifiedAccess>]
+type ResolveAction =
+    | Install of package:string * library:string * version:string
+    | Uninstall of package:string * library: string * version:string
+    | UnableToResolve of package:string * library:string * range:string * error: string
+
 let findLibraryWithNpmDeps (project: CrackedFsproj) =
     [ yield project.ProjectFile
       yield! project.ProjectReferences
@@ -190,6 +196,82 @@ let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
     | None ->
         ()
 
+let rec autoResolveActions
+    (nodeManager : NodeManager)
+    (library : LibraryWithNpmDeps)
+    (packagesToVerify : NpmDependency list)
+    (installedPackages : ResizeArray<InstalledNpmPackage>)
+    (actions: ResolveAction list) =
+
+    match packagesToVerify with
+    | package :: rest ->
+        let resolveActions =
+            let installed = installedPackages |> Seq.tryFind (fun p -> p.Name = package.Name)
+            match installed with
+            | None ->
+                // not installed -> needs to be installed
+                let requiredVersion = getSatisfyingPackageVersion nodeManager package
+                match requiredVersion with
+                | None ->
+                    let error = "Could not find a version that satisfies the required range"
+                    [ ResolveAction.UnableToResolve(library.Name, package.Name, package.RawVersion, error) ]
+                | Some version ->
+                    [ ResolveAction.Install(library.Name, package.Name, version) ]
+
+            | Some installedPackage ->
+                // already installed -> check whether it falls under the required constraint
+                match installedPackage.Range, installedPackage.Installed with
+                | Some range, Some installedVersion ->
+                    match package.Constraint with
+                    | Some requiredRange  ->
+                        if requiredRange.IsSatisfied installedVersion
+                        then
+                            // no need to do anything
+                            [ ]
+                        else
+                            // installed version falls outside of required range
+                            // resolve version from required range
+                            let requiredVersion = getSatisfyingPackageVersion nodeManager package
+                            match requiredVersion with
+                            | Some resolvedVersion ->
+                                [
+                                    // uninstall current
+                                    ResolveAction.Uninstall(library.Name, installedPackage.Name, installedVersion.ToString())
+                                    // resolve again
+                                    ResolveAction.Install(library.Name, package.Name, resolvedVersion)
+                                ]
+
+                            | None ->
+                                let error = "Could not find a version that satisfies the required range"
+                                [ ResolveAction.UnableToResolve(library.Name, installedPackage.Name, package.RawVersion, error) ]
+
+
+                    | None ->
+                        let error = "Required range of npm package was not correctly parsable"
+                        [ ResolveAction.UnableToResolve(library.Name, installedPackage.Name, package.RawVersion, error) ]
+
+                | _ ->
+                    [ ]
+
+        autoResolveActions nodeManager library rest installedPackages (List.append actions resolveActions)
+
+    | [ ] ->
+        actions
+
+let rec autoResolve
+    (nodeManager : NodeManager)
+    (libraries : LibraryWithNpmDeps list)
+    (installedPackages : ResizeArray<InstalledNpmPackage>)
+    (resolveActions: ResolveAction list) =
+
+    match libraries with
+    | library :: rest ->
+        let actions = autoResolveActions nodeManager library library.NpmDependencies installedPackages resolveActions
+        autoResolve nodeManager rest installedPackages actions
+
+    | [ ] ->
+        resolveActions
+
 let rec checkPackages
     (nodeManager : NodeManager)
     (library : LibraryWithNpmDeps)
@@ -252,6 +334,8 @@ let rec analyzePackages
 type FemtoArgs = {
     Project: string option
     PreviewMetadata: bool
+    Resolve : bool
+    ResolvePreview: bool
 }
 
 let (|FullPath|_|) project =
@@ -278,6 +362,22 @@ let rec parseComplexArgs defaultArgs = function
         let modifiedArgs = { defaultArgs with PreviewMetadata = true }
         parseComplexArgs modifiedArgs rest
 
+    | "--resolve" :: BoolArg value :: rest ->
+        let modifiedArgs = { defaultArgs with Resolve = value }
+        parseComplexArgs modifiedArgs rest
+
+    | "--resolve" :: rest ->
+        let modifiedArgs = { defaultArgs with Resolve = true }
+        parseComplexArgs modifiedArgs rest
+
+    | "--resolve-preview" :: BoolArg value :: rest ->
+        let modifiedArgs = { defaultArgs with ResolvePreview = value }
+        parseComplexArgs modifiedArgs rest
+
+    | "--resolve-preview" :: rest ->
+        let modifiedArgs = { defaultArgs with ResolvePreview = true }
+        parseComplexArgs modifiedArgs rest
+
     | FullPath project :: rest ->
         let modifiedArgs = {defaultArgs with Project = Some project }
         parseComplexArgs modifiedArgs rest
@@ -288,6 +388,8 @@ let rec parseComplexArgs defaultArgs = function
 let defaultCliArgs = {
     Project = None
     PreviewMetadata = false
+    Resolve = false
+    ResolvePreview = false
 }
 
 let parseArgs = function
@@ -304,6 +406,20 @@ let parseArgs = function
         match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
         | Some file -> { defaultCliArgs with Project = Some file; PreviewMetadata = true }
         | None -> { defaultCliArgs with Project = None; PreviewMetadata = true }
+
+    | [ "--resolve" ] ->
+        let cwd = Environment.CurrentDirectory
+        let siblings = IO.Directory.GetFiles cwd
+        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
+        | Some file -> { defaultCliArgs with Project = Some file; Resolve = true }
+        | None -> { defaultCliArgs with Project = None; Resolve = true }
+
+    | [ "--resolve-preview" ] ->
+        let cwd = Environment.CurrentDirectory
+        let siblings = IO.Directory.GetFiles cwd
+        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
+        | Some file -> { defaultCliArgs with Project = Some file; ResolvePreview = true }
+        | None -> { defaultCliArgs with Project = None; ResolvePreview = true }
 
     | complexArgs ->
         parseComplexArgs defaultCliArgs complexArgs
@@ -441,9 +557,37 @@ let rec main argv =
                         FemtoResult.fromCode (main argv)
 
                 | None ->
+
                     let installedPackages = findInstalledPackages packageJson
                     let nodeManager = workspaceCommand packageJson
 
+                    if args.ResolvePreview then
+                        logger.Information("Previewing required actions for package resolution")
+                        let resolveActions = autoResolve nodeManager libraries installedPackages []
+                        if List.isEmpty resolveActions then
+                            logger.Information("√ Required packages are already resolved")
+                            FemtoResult.ValidationSucceeded
+                        else
+                        for action in resolveActions do
+                            match action with
+                            | ResolveAction.Install(lib, pkg, version) ->
+                                logger.Information("{Library} -> Install {Package} @ {Version}", lib, pkg, version)
+                            | ResolveAction.Uninstall(lib, pkg, version) ->
+                                logger.Information("{Library} -> Uninstall {Package} @ {Version}", lib, pkg, version)
+                            | ResolveAction.UnableToResolve(lib, pkg, range, error) ->
+                                logger.Error("{Library} -> Unable to resolve version for {Package} within {Range}", lib, pkg, range)
+                                logger.Error(error)
+
+                        FemtoResult.ValidationSucceeded
+                    elif args.Resolve then
+                        let resolveActions = autoResolve nodeManager libraries installedPackages []
+                        if List.isEmpty resolveActions then
+                            logger.Information("√ Required packages are already resolved")
+                            FemtoResult.ValidationSucceeded
+                        else
+                            logger.Information("Executing required actions for package resolution")
+                            FemtoResult.ValidationSucceeded
+                    else
                     if analyzePackages nodeManager libraries installedPackages true then
                         FemtoResult.ValidationSucceeded
                     else
