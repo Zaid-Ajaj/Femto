@@ -600,8 +600,8 @@ type CLIArguments =
         member this.Usage =
             match this with
             | Project _ -> "specify the path to the F# project"
-            | Validate -> "check that the XML tags used in the F# project file is parsable and a npm package version can be calculated"
-            | Resolve -> "resolve package resolution and apply the required actions"
+            | Validate -> "check that the XML tags used in the F# project file are parsable and a npm package version can be calculated"
+            | Resolve -> "resolve and install required packages"
             | Preview -> "preview required actions for package resolution"
 
 let parseArgs (cliArgs : CLIArguments list) =
