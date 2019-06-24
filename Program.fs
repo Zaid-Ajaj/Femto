@@ -481,6 +481,16 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         |> Proc.run
         |> ignore
 
+    // print out resolve errors
+    for action in actions do
+        match action with
+        | ResolveAction.UnableToResolve(library, package, version, error) ->
+            logger.Error("{Library} -> Unable to resolve {Package} {Version}", library, package, version)
+            logger.Error(error)
+
+        | otherwise ->
+            ignore()
+
 [<EntryPoint>]
 let rec main argv =
     let args = parseArgs (List.ofArray argv)
@@ -654,6 +664,7 @@ let rec main argv =
                                 FemtoResult.UnexpectedError
                     else
                     if analyzePackages nodeManager libraries installedPackages true then
+                        logger.Information("")
                         logger.Information("√ Project analysis complete")
                         FemtoResult.ValidationSucceeded
                     else
