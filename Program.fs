@@ -1,4 +1,4 @@
-﻿open Femto
+open Femto
 open Femto.ProjectCracker
 open System
 open Serilog
@@ -10,6 +10,7 @@ open Fake.Core
 open Thoth.Json.Net
 open Fake.SystemHelper
 open Fake.SystemHelper
+open Argu
 
 let logger = LoggerConfiguration().WriteTo.Console().CreateLogger()
 
@@ -71,9 +72,9 @@ let needsNodeModules (packageJson: string) =
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
     let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
     let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
-    if nodeModulesExists then None
-    elif yarnLockExists then Some "yarn install"
-    else Some "npm install"
+    if nodeModulesExists then false
+    elif yarnLockExists then true
+    else true
 
 let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackage> =
     let parentDir = IO.Directory.GetParent packageJson
@@ -338,91 +339,12 @@ type FemtoArgs = {
     ResolvePreview: bool
 }
 
-let (|FullPath|_|) project =
-    if Path.isRelativePath project
-    then Some (Path.GetFullPath project)
-    else Some project
-
-let (|BoolArg|_|) (input: string) =
-    match input.ToLower() with
-    | "true" -> Some true
-    | "false" -> Some false
-    | _ -> None
-
-let rec parseComplexArgs defaultArgs = function
-    | "--project" :: FullPath project :: rest ->
-        let modifiedArgs = { defaultArgs with Project = Some project }
-        parseComplexArgs modifiedArgs rest
-
-    | "--validate" :: BoolArg value :: rest ->
-        let modifiedArgs = { defaultArgs with PreviewMetadata = value }
-        parseComplexArgs modifiedArgs rest
-
-    | "--validate" :: rest ->
-        let modifiedArgs = { defaultArgs with PreviewMetadata = true }
-        parseComplexArgs modifiedArgs rest
-
-    | "--resolve" :: BoolArg value :: rest ->
-        let modifiedArgs = { defaultArgs with Resolve = value }
-        parseComplexArgs modifiedArgs rest
-
-    | "--resolve" :: rest ->
-        let modifiedArgs = { defaultArgs with Resolve = true }
-        parseComplexArgs modifiedArgs rest
-
-    | "--resolve-preview" :: BoolArg value :: rest ->
-        let modifiedArgs = { defaultArgs with ResolvePreview = value }
-        parseComplexArgs modifiedArgs rest
-
-    | "--resolve-preview" :: rest ->
-        let modifiedArgs = { defaultArgs with ResolvePreview = true }
-        parseComplexArgs modifiedArgs rest
-
-    | FullPath project :: rest ->
-        let modifiedArgs = {defaultArgs with Project = Some project }
-        parseComplexArgs modifiedArgs rest
-
-    | _ ->
-        defaultArgs
-
 let defaultCliArgs = {
     Project = None
     PreviewMetadata = false
     Resolve = false
     ResolvePreview = false
 }
-
-let parseArgs = function
-    | [ ] ->
-        let cwd = Environment.CurrentDirectory
-        let siblings = IO.Directory.GetFiles cwd
-        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
-        | Some file -> { defaultCliArgs with Project = Some file;  }
-        | None -> defaultCliArgs
-
-    | [ "--validate" ] ->
-        let cwd = Environment.CurrentDirectory
-        let siblings = IO.Directory.GetFiles cwd
-        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
-        | Some file -> { defaultCliArgs with Project = Some file; PreviewMetadata = true }
-        | None -> { defaultCliArgs with Project = None; PreviewMetadata = true }
-
-    | [ "--resolve" ] ->
-        let cwd = Environment.CurrentDirectory
-        let siblings = IO.Directory.GetFiles cwd
-        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
-        | Some file -> { defaultCliArgs with Project = Some file; Resolve = true }
-        | None -> { defaultCliArgs with Project = None; Resolve = true }
-
-    | [ "--resolve-preview" ] ->
-        let cwd = Environment.CurrentDirectory
-        let siblings = IO.Directory.GetFiles cwd
-        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
-        | Some file -> { defaultCliArgs with Project = Some file; ResolvePreview = true }
-        | None -> { defaultCliArgs with Project = None; ResolvePreview = true }
-
-    | complexArgs ->
-        parseComplexArgs defaultCliArgs complexArgs
 
 let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: ResolveAction list) =
     let uninstallPackages =
@@ -491,14 +413,12 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         | otherwise ->
             ignore()
 
-[<EntryPoint>]
-let rec main argv =
-    let args = parseArgs (List.ofArray argv)
+let rec private runner (args : FemtoArgs) =
 
     match args.Project, args.PreviewMetadata with
     | None, _ ->
         logger.Error("Project path was not correctly provided")
-        int FemtoResult.ProjectFileNotFound
+        FemtoResult.ProjectFileNotFound
 
     | Some project, true ->
         // only preview dependencies
@@ -523,40 +443,40 @@ let rec main argv =
         match restoreResult with
         | Error error ->
             logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
-            int FemtoResult.ValidationFailed
+            FemtoResult.ValidationFailed
+
         | Ok () ->
 
-        logger.Information("Ensuring project can be analyzed")
-        let crackResult =
-            try
-                let projectInfo = ProjectCracker.fullCrack project
-                Ok projectInfo
-            with
-            | ex -> Error ex.Message
+            logger.Information("Ensuring project can be analyzed")
+            let crackResult =
+                try
+                    let projectInfo = ProjectCracker.fullCrack project
+                    Ok projectInfo
+                with
+                | ex -> Error ex.Message
 
-        match crackResult with
-        | Error er ->
-            logger.Error("Error while analyzing the project's structure and dependencies")
-            int FemtoResult.ValidationFailed
-        | Ok _ ->
-        let libraryName = Path.GetFileNameWithoutExtension project
-        let npmDependencies = Npm.parseDependencies project
-        if List.isEmpty npmDependencies
-        then
-            logger.Warning("Project {Project} does not contain npm dependency metadata", libraryName)
-            int FemtoResult.ProjectCrackerFailed
-        else
-        for pkg in npmDependencies do
-            logger.Information("{Library} requires npm package {Package}", libraryName, pkg.Name)
-            logger.Information("  | -- Required range {Range}", pkg.RawVersion)
-            logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
-            match getSatisfyingPackageVersion NodeManager.Npm pkg with
-            | Some version ->
-                logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
-            | None ->
-                logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
+            match crackResult with
+            | Error er ->
+                logger.Error("Error while analyzing the project's structure and dependencies")
+                FemtoResult.ValidationFailed
+            | Ok _ ->
+                let libraryName = Path.GetFileNameWithoutExtension project
+                let npmDependencies = Npm.parseDependencies project
+                if List.isEmpty npmDependencies then
+                    logger.Warning("Project {Project} does not contain npm dependency metadata", libraryName)
+                    FemtoResult.ProjectCrackerFailed
+                else
+                    for pkg in npmDependencies do
+                        logger.Information("{Library} requires npm package {Package}", libraryName, pkg.Name)
+                        logger.Information("  | -- Required range {Range}", pkg.RawVersion)
+                        logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
+                        match getSatisfyingPackageVersion NodeManager.Npm pkg with
+                        | Some version ->
+                            logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
+                        | None ->
+                            logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
 
-        int FemtoResult.ValidationSucceeded
+                    FemtoResult.ValidationSucceeded
 
     | Some project, false ->
         logger.Information("Analyzing project {Project}", project)
@@ -568,12 +488,12 @@ let rec main argv =
         match projectInfo with
         | Error errorMessage ->
             logger.Error("Error while analyzing project structure and dependencies")
-            int FemtoResult.ProjectCrackerFailed
+            FemtoResult.ProjectCrackerFailed
         | Ok projectInfo ->
 
-        let libraries = findLibraryWithNpmDeps projectInfo
+            let libraries = findLibraryWithNpmDeps projectInfo
 
-        let result =
+
             match findPackageJson project with
             | None ->
                 for library in libraries do
@@ -585,45 +505,44 @@ let rec main argv =
 
             | Some packageJson ->
                 logger.Information("Found package.json in {Dir}", (IO.Directory.GetParent packageJson).FullName)
-                match needsNodeModules packageJson with
-                | Some command ->
+                if needsNodeModules packageJson then
                     logger.Information("Npm packages need to be restored first for project analysis")
                     let nodeManager = workspaceCommand packageJson
                     let workingDirectory = IO.Directory.GetParent packageJson
                     match nodeManager with
                     | NodeManager.Npm ->
                         logger.Information("Restoring npm packages using 'npm install' inside {Dir}", (IO.Directory.GetParent packageJson).FullName)
-                        let program, args =
+                        let program, npmArgs =
                             if Environment.isWindows
                             then "cmd", [ "/C"; "npm"; "install" ]
                             else "npm", [ "install" ]
 
-                        CreateProcess.fromRawCommand program args
+                        CreateProcess.fromRawCommand program npmArgs
                         |> CreateProcess.withWorkingDirectory workingDirectory.FullName
                         |> CreateProcess.redirectOutput
                         |> CreateProcess.ensureExitCode
                         |> Proc.run
                         |> ignore
 
-                        FemtoResult.fromCode (main argv)
+                        runner args
 
                     | NodeManager.Yarn ->
                         logger.Information("Restoring npm packages using 'yarn install' inside {Dir}", (IO.Directory.GetParent packageJson).FullName)
-                        let program, args =
+                        let program, yarnArgs =
                             if Environment.isWindows
                             then "cmd", [ "/C"; "yarn"; "install" ]
                             else "yarn", [ "install" ]
 
-                        CreateProcess.fromRawCommand program args
+                        CreateProcess.fromRawCommand program yarnArgs
                         |> CreateProcess.withWorkingDirectory workingDirectory.FullName
                         |> CreateProcess.redirectOutput
                         |> CreateProcess.ensureExitCode
                         |> Proc.run
                         |> ignore
 
-                        FemtoResult.fromCode (main argv)
+                        runner args
 
-                | None ->
+                else
 
                     let installedPackages = findInstalledPackages packageJson
                     let nodeManager = workspaceCommand packageJson
@@ -670,4 +589,82 @@ let rec main argv =
                     else
                         FemtoResult.ValidationFailed
 
-        int result
+
+type CLIArguments =
+    | [<MainCommand; ExactlyOnce>] Project of path : string
+    | Validate
+    | Resolve
+    | Preview
+
+    interface IArgParserTemplate with
+
+        member this.Usage =
+            match this with
+            | Project _ -> "specify the path to the F# project"
+            | Validate -> "check that the XML tags used in the F# project file is parsable and a npm package version can be calculated"
+            | Resolve -> "resolve package resolution and apply the required actions"
+            | Preview -> "preview required actions for package resolution"
+
+let parseArgs (cliArgs : CLIArguments list) =
+    let rec apply (cliArgs : CLIArguments list) (res : FemtoArgs) =
+        match cliArgs with
+        | Project project::rest ->
+            let project =
+                if Path.isRelativePath project then
+                    Path.GetFullPath project
+                else
+                    project
+
+            apply rest { res with Project = Some project }
+
+        | Validate::rest ->
+            apply rest { res with PreviewMetadata = true }
+
+        | Resolve::rest ->
+            apply rest { res with Resolve = true }
+
+        | Preview::rest ->
+            apply rest { res with ResolvePreview = true }
+
+        | [ ] ->
+            res
+
+    let cwd = Environment.CurrentDirectory
+    let siblings = IO.Directory.GetFiles cwd
+    // By default, we try to resolve the fsproj in the currect directory
+    // This can be override if the user pass the project pass
+    let defaultArgs =
+        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
+        | Some file ->
+            { defaultCliArgs with Project = Some file }
+
+        | None ->
+            { defaultCliArgs with Project = None }
+
+    apply cliArgs defaultArgs
+
+[<EntryPoint>]
+let rec main argv =
+    let parser = ArgumentParser.Create<CLIArguments>("femto")
+
+    let printUsage() =
+        parser.PrintUsage()
+        |> printfn "%s" // We don't use the logger in order to avoid the [time type] prefix in the console
+
+    let result =
+        try
+            let args = parser.Parse(argv)
+
+            if args.IsUsageRequested then
+                printUsage()
+                FemtoResult.UsageRequested
+            else
+                args.GetAllResults()
+                |> parseArgs
+                |> runner
+        with
+            | _ ->
+                printUsage()
+                FemtoResult.InvalidArguments
+
+    int result
