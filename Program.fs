@@ -71,10 +71,7 @@ let needsNodeModules (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
     let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
-    let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
-    if nodeModulesExists then false
-    elif yarnLockExists then true
-    else true
+    not nodeModulesExists
 
 let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackage> =
     let parentDir = IO.Directory.GetParent packageJson
