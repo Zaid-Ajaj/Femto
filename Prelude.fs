@@ -1,25 +1,15 @@
 namespace Femto
 
 type FemtoResult =
+    | UnexpectedError = -1
     | ValidationSucceeded = 0
     | MissingPackageJson = 1
     | NodeModulesNotInstalled = 2
     | ValidationFailed = 3
     | ProjectFileNotFound = 4
     | ProjectCrackerFailed = 5
-    | UnexpectedError = -1
-
-
-module FemtoResult =
-    let fromCode = function
-    | 0 -> FemtoResult.ValidationSucceeded
-    | 1 -> FemtoResult.MissingPackageJson
-    | 2 -> FemtoResult.NodeModulesNotInstalled
-    | 3 -> FemtoResult.ValidationFailed
-    | 4 -> FemtoResult.ProjectFileNotFound
-    | 5 -> FemtoResult.ProjectCrackerFailed
-    | n -> FemtoResult.UnexpectedError
-
+    | UsageRequested = 6
+    | InvalidArguments = 7
 
 type ResizeArrayDictionary<'K, 'V when 'K : equality>() =
     let dic = System.Collections.Generic.Dictionary<'K, ResizeArray<'V>>()
