@@ -457,26 +457,25 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
 
 
     if not (List.isEmpty installPackages) then
-        let installExpr =
+        let packagesToInstall =
             installPackages
             |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
-            |> String.concat " "
 
         let program, args =
             match manager with
             | NodeManager.Npm ->
                 if Environment.isWindows
-                then "cmd", [ "/C"; "npm"; "install"; installExpr; "--save" ]
-                else "npm", [ "install"; installExpr; "--save" ]
+                then "cmd", List.concat [ ["/C"; "npm"; "install"]; packagesToInstall; ["--save"] ]
+                else "npm", List.concat [ ["install" ] ; packagesToInstall; [ "--save" ] ]
             | NodeManager.Yarn ->
                 if Environment.isWindows
-                then "cmd", [ "/C"; "yarn"; "add"; installExpr ]
-                else "yarn", [ "add"; installExpr ]
+                then "cmd", List.concat [ [ "/C"; "yarn"; "add"; ]; packagesToInstall ]
+                else "yarn", List.concat [ [ "add" ]; packagesToInstall ]
 
-        logger.Information("Installing [{Libraryies}]", installExpr)
+        logger.Information("Installing [{Libraryies}]", packagesToInstall |> String.concat ", ")
         CreateProcess.fromRawCommand program args
         |> CreateProcess.withWorkingDirectory cwd
-        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" installExpr)
+        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (packagesToInstall |> String.concat ", "))
         |> CreateProcess.redirectOutput
         |> Proc.run
         |> ignore
