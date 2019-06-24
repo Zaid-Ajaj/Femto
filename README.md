@@ -21,7 +21,7 @@ Here is an example output:
 c:\>femto ./App.fsproj
 [01:36:31 INF] Analyzing project c:\App.fsproj
 [01:36:34 INF]
-[01:36:34 INF] Fable.DateFunctions depends on npm package 'date-fns'
+[01:36:34 INF] Fable.DateFunctions depends on npm package date-fns
 [01:36:34 INF]   | -- Required range >= 1.30.0 found in project file
 [01:36:34 INF]   | -- Used range ^1.28.2 in package.json
 [01:36:34 ERR]   | -- Installed version 1.29.0 does not satisfy required range >= 1.30.0
@@ -33,15 +33,19 @@ Femto can automagically resolve required package issues using the command `--res
 ```
 femto --resolve
 
-femto --resolve --project ./src/Client.fsproj
+femto --resolve ./src/Client.fsproj
 ```
+This command checks for missing packages and packages of which the installed version does not satisfy the required version found in npm dependency metadata of the used Fable packages.
+ - If a package is missing then it is installed.
+ - If a package version doesn't satisfy requirements, then a proper version is resolved and the package is replaced with the new resolved version by uninstalling the current one and installing the correct package.
+ - If a package version doesn't satisfy requirements *and* a version cannot be resolved that satisfies requirements, then a resolution error is logged.
 
-### Preview resolution actions with `--resolve-preview`
-You can see what Femto will attempt to do without actually executing the commands themselves using `--resolve-preview`
+### Preview required resolution actions with `--preview`
+You can see what Femto will attempt to execute without actually executing the commands themselves using `--preview`
 ```
-femto --resolve-preview
+femto --preview
 
-femto --resolve-preview --project ./src/Client.fsproj
+femto --preview ./src/Client.fsproj
 ```
 
 ### Library Authors
@@ -58,7 +62,7 @@ Notice here in the example, we have one npm package we depend upon which has req
 
 ### Resolution Strategy
 
-You can customize the resolution strategy by adding `ResolutionStrategy` attribute to an `NpmPackage` node. Accepted values are `min` and `max`. If `ResolutionStrategy` is not set, we default to `min` strategy.
+You can customize the resolution strategy by adding `ResolutionStrategy` attribute to an `NpmPackage` node. Accepted values are `min` and `max` (case-insensitive). If `ResolutionStrategy` is not set, we default to `min` strategy.
 
 ```xml
 <PropertyGroup>
@@ -83,6 +87,6 @@ If you are a library author and wondering whether Femto will pick uo the depende
 ```
 femto --validate
 
-femto --validate --project ./path/to/Library.fsproj
+femto --validate ./path/to/Library.fsproj
 ```
-In the directory where you have the project file of your library. This command will check whether the library has valid metadata about the required npm packages and will resolve the versions based on the specified `ResolutionStrategy`.
+In the directory where you have the project file of your library. This command will check whether the library has valid metadata about the required npm packages and will try to resolve the versions based on the specified `ResolutionStrategy`.
