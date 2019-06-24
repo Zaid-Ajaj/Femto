@@ -553,9 +553,9 @@ let rec private runner (args : FemtoArgs) =
                         for action in resolveActions do
                             match action with
                             | ResolveAction.Install(lib, pkg, version) ->
-                                logger.Information("{Library} -> Install {Package} @ {Version}", lib, pkg, version)
+                                logger.Information("{Library} -> Install {Package} version {Version}", lib, pkg, version)
                             | ResolveAction.Uninstall(lib, pkg, version) ->
-                                logger.Information("{Library} -> Uninstall {Package} @ {Version}", lib, pkg, version)
+                                logger.Information("{Library} -> Uninstall {Package} version {Version}", lib, pkg, version)
                             | ResolveAction.UnableToResolve(lib, pkg, range, error) ->
                                 logger.Error("{Library} -> Unable to resolve version for {Package} within {Range}", lib, pkg, range)
                                 logger.Error(error)
