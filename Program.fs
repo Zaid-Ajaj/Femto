@@ -5,10 +5,8 @@ open Serilog
 open Npm
 open Newtonsoft.Json.Linq
 open FSharp.Compiler.AbstractIL.Internal.Library
-open System.Diagnostics
 open Fake.Core
 open Thoth.Json.Net
-open Fake.SystemHelper
 open Fake.SystemHelper
 open Argu
 
@@ -40,13 +38,14 @@ let findLibraryWithNpmDeps (project: CrackedFsproj) =
     )
     |> List.filter (fun projet -> not (List.isEmpty projet.NpmDependencies))
 
+/// Determines the full path of the package.json file by recursively checking every directory and it's parent starting from the path of the project file
 let rec findPackageJson (project: string) =
     let parentDir = IO.Directory.GetParent project
     if isNull parentDir then None
     else
       parentDir.FullName
       |> IO.Directory.GetFiles
-      |> Seq.tryFind (fun file -> file.EndsWith "package.json")
+      |> Seq.tryFind (fun file -> Path.GetFileName file = "package.json")
       |> Option.orElse (findPackageJson parentDir.FullName)
 
 [<RequireQualifiedAccess>]
@@ -59,26 +58,23 @@ type NodeManager =
         | Yarn -> "yarn"
         | Npm -> "npm"
 
+/// Determines which node package maneger to use by checking whether the yarn.lock file is present next to package.json
 let workspaceCommand (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
-    let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
+    let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName ]
     let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
     if yarnLockExists
     then NodeManager.Yarn
     else NodeManager.Npm
 
+/// Determines whether npm packages have been restored by checking the existence of node_modules directory is present next to package.json
 let needsNodeModules (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
-    let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
-    let nodeModulesExists = siblings |> List.exists (fun file -> file.EndsWith "node_modules")
+    let siblings = IO.Directory.GetDirectories parentDir.FullName
+    let nodeModulesExists = siblings |> Array.exists (fun file -> file.EndsWith "node_modules")
     not nodeModulesExists
 
 let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackage> =
-    let parentDir = IO.Directory.GetParent packageJson
-    let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName; yield! IO.Directory.GetDirectories parentDir.FullName ]
-    let nodeModulesExists = siblings |> List.tryFind (fun file -> file.EndsWith "node_modules")
-    let yarnLockExists = siblings |> List.tryFind (fun file -> file.EndsWith "yarn.lock")
-    let packageLockExists = siblings |> List.tryFind (fun file -> file.EndsWith "package-lock.json")
     let content = JObject.Parse(IO.File.ReadAllText packageJson)
     let dependencies : JProperty list = [
         if content.ContainsKey "dependencies"
@@ -99,10 +95,19 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
         }
     ]
 
-    match yarnLockExists, packageLockExists, nodeModulesExists with
-    | None, None, None ->
+    if needsNodeModules packageJson
+    then
+        // should have installed node_modules
+        // return just top-level packages without their exact installed versions
         topLevelPackages
-    | Some yarnLockFile, None, Some nodeModulePath ->
+    else
+        // node_modules is present
+        // traverse all packages in there to extract their exact versions
+        // assumes node_modules is *flattened*
+        let parentDir = IO.Directory.GetParent packageJson
+        let siblings = IO.Directory.GetDirectories parentDir.FullName
+        // using Array.find because we know for sure node_modules is present
+        let nodeModulePath = siblings |> Array.find (fun dir -> dir.EndsWith "node_modules")
         for dir in IO.Directory.GetDirectories nodeModulePath do
             let pkgJson = IO.Path.Combine(dir, "package.json")
             if not (IO.File.Exists pkgJson)
@@ -115,33 +120,41 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
                     else ()
 
         topLevelPackages
-    | None, Some packageLockFile, Some nodeModulePath ->
-        for dir in IO.Directory.GetDirectories nodeModulePath do
-            let pkgJson = IO.Path.Combine(dir, "package.json")
-            if not (IO.File.Exists pkgJson)
-                then ()
-            else
-                let pkgJsonContent = JObject.Parse(File.readAllTextNonBlocking pkgJson)
-                for pkg in topLevelPackages do
-                    if pkg.Name = pkgJsonContent.["name"].ToObject<string>()
-                    then pkg.Installed <- Some (SemVer.Version (pkgJsonContent.["version"].ToObject<string>()))
-                    else ()
 
-        topLevelPackages
-    | _ ->
-        topLevelPackages
+module CreateProcess =
+    /// Creates a cross platfrom command from the given program and arguments.
+    ///
+    /// For example:
+    ///
+    /// ```fsharp
+    /// CreateProcess.xplatCommand "npm" [ "install" ]
+    /// ```
+    ///
+    /// Will be the following on windows
+    ///
+    /// ```fsharp
+    /// CreateProcess.fromRawCommand "cmd" [ "/C"; "npm"; "install" ]
+    /// ```
+    /// And the following otherwise
+    ///
+    /// ```fsharp
+    /// CreateProcess.fromRawCommand "npm" [ "install" ]
+    /// ```
+    let xplatCommand program args =
+        let program', args' =
+            if Environment.isWindows
+            then "cmd", List.concat [ [ "/C"; program ]; args ]
+            else program, args
 
+        CreateProcess.fromRawCommand program' args'
+
+/// Queries the available versions of a package by name and finds the first version that satisfies the version range of the dependency
 let getSatisfyingPackageVersion (nodeManager: NodeManager) (pkg : NpmDependency) =
     let packageVersions =
         match nodeManager with
         | NodeManager.Npm ->
-            let program, args =
-                if Environment.isWindows
-                then "cmd", [ "/C"; "npm"; "show"; pkg.Name; "versions"; "--json" ]
-                else "npm", [ "show"; pkg.Name; "versions"; "--json" ]
-
             let res =
-                CreateProcess.fromRawCommand program args
+                CreateProcess.xplatCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
                 |> CreateProcess.redirectOutput
                 |> CreateProcess.ensureExitCode
                 |> Proc.run
@@ -149,13 +162,8 @@ let getSatisfyingPackageVersion (nodeManager: NodeManager) (pkg : NpmDependency)
             Decode.unsafeFromString (Decode.list Decode.string) res.Result.Output
 
         | NodeManager.Yarn ->
-            let program, args =
-                if Environment.isWindows
-                then "cmd", [ "/C"; "yarn"; "info"; pkg.Name; "versions"; "--json" ]
-                else "yarn", [ "info"; pkg.Name; "versions"; "--json" ]
-
             let res =
-                CreateProcess.fromRawCommand program args
+                CreateProcess.xplatCommand "yarn" [ "info"; pkg.Name; "versions"; "--json" ]
                 |> CreateProcess.redirectOutput
                 |> CreateProcess.ensureExitCode
                 |> Proc.run
@@ -194,6 +202,7 @@ let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
     | None ->
         ()
 
+/// Computes which actions are required for full package resolution of a single library based on the available npm dependency metadata and the currently installed npm packages
 let rec autoResolveActions
     (nodeManager : NodeManager)
     (library : LibraryWithNpmDeps)
@@ -235,7 +244,7 @@ let rec autoResolveActions
                                 [
                                     // uninstall current
                                     ResolveAction.Uninstall(library.Name, installedPackage.Name, installedVersion.ToString())
-                                    // resolve again
+                                    // resolve using the resolved version
                                     ResolveAction.Install(library.Name, package.Name, resolvedVersion)
                                 ]
 
@@ -256,6 +265,7 @@ let rec autoResolveActions
     | [ ] ->
         actions
 
+/// Computes the actions required for full package resolution for a list of Fable libraries based on their npm dependency metadata and the installed npm packages
 let rec autoResolve
     (nodeManager : NodeManager)
     (libraries : LibraryWithNpmDeps list)
@@ -270,7 +280,8 @@ let rec autoResolve
     | [ ] ->
         resolveActions
 
-let rec checkPackages
+/// Performs dependency analysis of a single Fable project based on it's metadata and the installed npm packages
+let rec analyzePackagesForLibrary
     (nodeManager : NodeManager)
     (library : LibraryWithNpmDeps)
     (packagesToVerify : NpmDependency list)
@@ -284,16 +295,16 @@ let rec checkPackages
         let result =
             match installed with
             | None ->
-                logger.Error("{Library} depends on npm package '{Package}'", library.Name, pkg.Name, pkg.RawVersion)
+                logger.Error("{Library} depends on npm package {Package}", library.Name, pkg.Name, pkg.RawVersion)
                 logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                logger.Error("  | -- Missing '{package}' in package.json", pkg.Name)
+                logger.Error("  | -- Missing {package} in package.json", pkg.Name)
                 printInstallHint nodeManager pkg
                 false
 
             | Some installedPackage  ->
                 match installedPackage.Range, installedPackage.Installed with
                 | Some range, Some version ->
-                    logger.Information("{Library} depends on npm package '{Package}'", library.Name, pkg.Name);
+                    logger.Information("{Library} depends on npm package {Package}", library.Name, pkg.Name);
                     logger.Information("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
                     logger.Information("  | -- Used range {Range} in package.json", range.ToString())
                     match pkg.Constraint with
@@ -307,13 +318,14 @@ let rec checkPackages
                         false
 
                 | _ ->
-                    logger.Error("{Library} requires npm package '{Package}' ({Version}) which was not installed", library.Name, pkg.Name, pkg.Constraint.ToString())
+                    logger.Error("{Library} requires npm package {Package} version {Version} which was not installed", library.Name, pkg.Name, pkg.Constraint.ToString())
                     false
 
-        checkPackages nodeManager library rest installedPackages (isOk && result)
+        analyzePackagesForLibrary nodeManager library rest installedPackages (isOk && result)
     | [] ->
         isOk
 
+/// Performs dependency analysis of multiple Fable projects based on their metadata and the installed npm packages
 let rec analyzePackages
     (nodeManager : NodeManager)
     (libraries : LibraryWithNpmDeps list)
@@ -323,16 +335,20 @@ let rec analyzePackages
     match libraries with
     | library::rest ->
         let result =
-            checkPackages nodeManager library library.NpmDependencies installedPackages true
+            analyzePackagesForLibrary nodeManager library library.NpmDependencies installedPackages true
 
         analyzePackages nodeManager rest installedPackages (isOk && result)
     | [] ->
         isOk
 
 type FemtoArgs = {
+    /// The project on which the analysis is performed
     Project: string option
+    /// When set to true, validates the metadata of the npm dependencies of a Fable library
     PreviewMetadata: bool
+    /// When set to true, performs the required actions for full package resolution
     Resolve : bool
+    /// When set to true, shows the actions required for full package resolution without actually performing them
     ResolvePreview: bool
 }
 
@@ -355,51 +371,40 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         | _ -> None)
 
     if not (List.isEmpty uninstallPackages) then
+        // then there some packages we need to uninstall first
         let program, args =
             match manager with
-            | NodeManager.Npm ->
-                if Environment.isWindows
-                then "cmd", List.concat [ ["/C"; "npm"; "uninstall" ]; uninstallPackages; [ "--save" ] ]
-                else "npm", List.concat [ [ "uninstall" ]; uninstallPackages; ["--save" ]]
-            | NodeManager.Yarn ->
-                if Environment.isWindows
-                then "cmd", List.append [ "/C"; "yarn"; "remove" ] uninstallPackages
-                else "yarn", List.append [ "remove" ] uninstallPackages
+            | NodeManager.Npm -> "npm", [ yield "uninstall"; yield! uninstallPackages; yield "--save" ]
+            | NodeManager.Yarn -> "yarn", [ yield "remove"; yield! uninstallPackages ]
 
         logger.Information("Uninstalling [{Libraries}]", String.concat ", " uninstallPackages)
-        CreateProcess.fromRawCommand program args
+        CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while uninstalling [%s]" (String.concat ", " uninstallPackages))
         |> CreateProcess.redirectOutput
         |> Proc.run
         |> ignore
 
-
     if not (List.isEmpty installPackages) then
+        // there are packages that need to be installed
         let packagesToInstall =
             installPackages
             |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
 
         let program, args =
             match manager with
-            | NodeManager.Npm ->
-                if Environment.isWindows
-                then "cmd", List.concat [ ["/C"; "npm"; "install"]; packagesToInstall; ["--save"] ]
-                else "npm", List.concat [ ["install" ] ; packagesToInstall; [ "--save" ] ]
-            | NodeManager.Yarn ->
-                if Environment.isWindows
-                then "cmd", List.concat [ [ "/C"; "yarn"; "add"; ]; packagesToInstall ]
-                else "yarn", List.concat [ [ "add" ]; packagesToInstall ]
+            | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save" ]
+            | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall ]
 
-        logger.Information("Installing [{Libraryies}]", packagesToInstall |> String.concat ", ")
-        CreateProcess.fromRawCommand program args
+        logger.Information("Installing [{Libraryies}]", String.concat ", " packagesToInstall)
+        CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
-        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (packagesToInstall |> String.concat ", "))
+        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (String.concat ", " packagesToInstall))
         |> CreateProcess.redirectOutput
         |> Proc.run
         |> ignore
 
-    // print out resolve errors
+    // print out resolution errors
     for action in actions do
         match action with
         | ResolveAction.UnableToResolve(library, package, version, error) ->
@@ -420,14 +425,10 @@ let rec private runner (args : FemtoArgs) =
         // only preview dependencies
         logger.Information("Validating project {Project}", project)
         logger.Information("Running {Command} against the project", "dotnet restore")
-        let program, args =
-            if Environment.isWindows
-            then "cmd", [ "/C"; "dotnet"; "restore" ]
-            else "dotnet", [ "restore" ]
 
         let restoreResult =
             let processOutput =
-                CreateProcess.fromRawCommand program args
+                CreateProcess.xplatCommand "dotnet" [ "restore" ]
                 |> CreateProcess.withWorkingDirectory ((IO.Directory.GetParent project).FullName)
                 |> CreateProcess.redirectOutput
                 |> Proc.run
@@ -500,48 +501,25 @@ let rec private runner (args : FemtoArgs) =
                 FemtoResult.MissingPackageJson
 
             | Some packageJson ->
-                logger.Information("Found package.json in {Dir}", (IO.Directory.GetParent packageJson).FullName)
+                let packageJsonDir = (IO.Directory.GetParent packageJson).FullName
+                let nodeManager = workspaceCommand packageJson
+                logger.Information("Found package.json in {Dir}", packageJsonDir)
                 if needsNodeModules packageJson then
                     logger.Information("Npm packages need to be restored first for project analysis")
-                    let nodeManager = workspaceCommand packageJson
-                    let workingDirectory = IO.Directory.GetParent packageJson
-                    match nodeManager with
-                    | NodeManager.Npm ->
-                        logger.Information("Restoring npm packages using 'npm install' inside {Dir}", (IO.Directory.GetParent packageJson).FullName)
-                        let program, npmArgs =
-                            if Environment.isWindows
-                            then "cmd", [ "/C"; "npm"; "install" ]
-                            else "npm", [ "install" ]
+                    let restoreCommand = sprintf "%s install" nodeManager.CommandName
+                    logger.Information("Restoring npm packages using '{Command}' inside {Dir}", restoreCommand, packageJsonDir)
+                    CreateProcess.xplatCommand nodeManager.CommandName [ "install" ]
+                    |> CreateProcess.withWorkingDirectory packageJsonDir
+                    |> CreateProcess.redirectOutput
+                    |> CreateProcess.ensureExitCode
+                    |> Proc.run
+                    |> ignore
 
-                        CreateProcess.fromRawCommand program npmArgs
-                        |> CreateProcess.withWorkingDirectory workingDirectory.FullName
-                        |> CreateProcess.redirectOutput
-                        |> CreateProcess.ensureExitCode
-                        |> Proc.run
-                        |> ignore
-
-                        runner args
-
-                    | NodeManager.Yarn ->
-                        logger.Information("Restoring npm packages using 'yarn install' inside {Dir}", (IO.Directory.GetParent packageJson).FullName)
-                        let program, yarnArgs =
-                            if Environment.isWindows
-                            then "cmd", [ "/C"; "yarn"; "install" ]
-                            else "yarn", [ "install" ]
-
-                        CreateProcess.fromRawCommand program yarnArgs
-                        |> CreateProcess.withWorkingDirectory workingDirectory.FullName
-                        |> CreateProcess.redirectOutput
-                        |> CreateProcess.ensureExitCode
-                        |> Proc.run
-                        |> ignore
-
-                        runner args
+                    runner args
 
                 else
 
                     let installedPackages = findInstalledPackages packageJson
-                    let nodeManager = workspaceCommand packageJson
                     logger.Information("Using {Manager} for package management", nodeManager.CommandName)
                     if args.ResolvePreview then
                         logger.Information("Previewing required actions for package resolution")
@@ -627,20 +605,16 @@ let parseArgs (cliArgs : CLIArguments list) =
 
     let cwd = Environment.CurrentDirectory
     let siblings = IO.Directory.GetFiles cwd
-    // By default, we try to resolve the fsproj in the currect directory
-    // This can be override if the user pass the project pass
+    // By default, we try to find the fsproj in the currect directory
+    // This can be overriden if the user passes the project path
     let defaultArgs =
-        match siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj") with
-        | Some file ->
-            { defaultCliArgs with Project = Some file }
-
-        | None ->
-            { defaultCliArgs with Project = None }
+        let projectFile = siblings |> Seq.tryFind (fun f -> f.EndsWith ".fsproj")
+        { defaultCliArgs with Project = projectFile }
 
     apply cliArgs defaultArgs
 
 [<EntryPoint>]
-let rec main argv =
+let main argv =
     let parser = ArgumentParser.Create<CLIArguments>("femto")
 
     let printUsage() =
