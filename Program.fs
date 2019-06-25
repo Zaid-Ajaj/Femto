@@ -386,14 +386,15 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         |> ignore
 
     if not (List.isEmpty installPackages) then
+        // there are packages that need to be installed
         let packagesToInstall =
             installPackages
             |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
 
         let program, args =
             match manager with
-            | NodeManager.Npm -> "npm", List.concat [ ["install" ]; packagesToInstall; [ "--save" ] ]
-            | NodeManager.Yarn -> "yarn", List.concat [ [ "add" ]; packagesToInstall ]
+            | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save" ]
+            | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall ]
 
         logger.Information("Installing [{Libraryies}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
