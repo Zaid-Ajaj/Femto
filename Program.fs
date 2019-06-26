@@ -469,14 +469,14 @@ let resolveConflicts (actions: ResolveAction list) =
                         |> List.tryHead
                         |> function
                             | None ->
-                                ResolveAction.Install(libName, pkgName, version.ToString(), String.concat " || " rangeStrings)
+                                ResolveAction.Install(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
                             | Some problematicRange ->
                                 if not (problematicRange.IsSatisfied version)
                                 then
-                                    let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" (version.ToString()) (String.concat " || " rangeStrings) (problematicRange.ToString())
+                                    let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" (version.ToString()) (String.concat " && " rangeStrings) (problematicRange.ToString())
                                     ResolveAction.UnableToResolve(libName, pkgName, problematicRange.ToString(), errorMsg)
                                 else
-                                    ResolveAction.Install(libName, pkgName, version.ToString(), String.concat " || " rangeStrings)
+                                    ResolveAction.Install(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
         )
 
     let distinctInstallDevActions =
@@ -535,14 +535,14 @@ let resolveConflicts (actions: ResolveAction list) =
                         |> List.tryHead
                         |> function
                             | None ->
-                                ResolveAction.InstallDev(libName, pkgName, version.ToString(), String.concat " || " rangeStrings)
+                                ResolveAction.InstallDev(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
                             | Some problematicRange ->
                                 if not (problematicRange.IsSatisfied version)
                                 then
-                                    let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" (version.ToString()) (String.concat " || " rangeStrings) (problematicRange.ToString())
+                                    let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" (version.ToString()) (String.concat " && " rangeStrings) (problematicRange.ToString())
                                     ResolveAction.UnableToResolve(libName, pkgName, problematicRange.ToString(), errorMsg)
                                 else
-                                    ResolveAction.InstallDev(libName, pkgName, version.ToString(), String.concat " || " rangeStrings)
+                                    ResolveAction.InstallDev(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
         )
 
     let unresolvableActions =
