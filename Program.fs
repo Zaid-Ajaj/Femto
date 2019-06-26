@@ -209,8 +209,15 @@ let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
     | Some version ->
         let hint =
             match nodeManager with
-            | NodeManager.Npm -> sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name version
-            | NodeManager.Yarn -> sprintf "%s add %s@%s" nodeManager.CommandName pkg.Name version
+            | NodeManager.Npm ->
+                if pkg.DevDependency
+                then sprintf "%s install %s@%s --save-dev" nodeManager.CommandName pkg.Name version
+                else sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name version
+
+            | NodeManager.Yarn ->
+                if pkg.DevDependency
+                then sprintf "%s add %s@%s --dev" nodeManager.CommandName pkg.Name version
+                else sprintf "%s add %s@%s" nodeManager.CommandName pkg.Name version
 
         logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
 
@@ -426,7 +433,7 @@ let resolveConflicts (actions: ResolveAction list) =
         |> List.map (fun (pkgName, packages) ->
             match packages with
             | [ (lib, _, version, range) ] ->
-                // make sure the library was did not have an unresolvable version
+                // make sure the library did not have an unresolvable version
                 actions
                 |> List.choose (function
                     | ResolveAction.UnableToResolve(lib, pkg, range, error) when pkg = pkgName -> Some(SemVer.Range(range))
