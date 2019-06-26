@@ -12,12 +12,14 @@ type NpmDependency = {
     Constraint: Range option
     RawVersion : string
     LowestMatching : bool
+    DevDependency : bool
 }
 
 type InstalledNpmPackage = {
     mutable Name : string
     mutable Range : Range option
     mutable Installed : Version option
+    mutable DevDependency : bool
 }
 
 let (|StartsWith|_|) (value:string) (input: string) =
@@ -54,6 +56,19 @@ let private parseResolutionStrategy (node : XmlNode) =
     )
     |> Option.defaultValue true
 
+let private parseDevDependency (node : XmlNode) =
+    node
+    |> tryAttr "DevDependency"
+    |> Option.map (fun value ->
+        match value.ToLower().Trim() with
+        | "true" -> true
+        | "false" -> false
+        | _ ->
+            logger.Warning("Invalid value for 'DevDependency' attribute, accepted values are 'true' or 'false'. Using 'false' as default")
+            false
+    )
+    |> Option.defaultValue false
+
 let preprocessVersion (input: string)  =
     input
       .ToLower()
@@ -73,11 +88,12 @@ let parseDependencies (project: string) =
                 "NpmPackage"
                 |> elementsByTag (rootNode :?> XmlElement)
                 |> List.map (fun node -> {
-                        Name = attr "Name" node;
-                        RawVersion = preprocessVersion (attr "Version" node)
-                        Constraint = parseConstraint (preprocessVersion (attr "Version" node))
-                        LowestMatching = parseResolutionStrategy node
-                    })
+                    Name = attr "Name" node;
+                    RawVersion = preprocessVersion (attr "Version" node)
+                    Constraint = parseConstraint (preprocessVersion (attr "Version" node))
+                    LowestMatching = parseResolutionStrategy node
+                    DevDependency = parseDevDependency node
+                })
 
             npmPackages
         | _ ->

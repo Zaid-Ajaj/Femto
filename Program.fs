@@ -18,11 +18,14 @@ type LibraryWithNpmDeps = {
     NpmDependencies : NpmDependency list
 }
 
+
 [<RequireQualifiedAccess>]
 type ResolveAction =
-    | Install of package:string * library:string * version:string
-    | Uninstall of package:string * library: string * version:string
-    | UnableToResolve of package:string * library:string * range:string * error: string
+    | Install of library:string * package:string * version:string * range: string
+    | InstallDev of library:string * package:string * version:string * range: string
+    | Uninstall of library:string * package: string * version:string
+    | UninstallDev of library:string * package: string * version:string
+    | UnableToResolve of library:string * package:string * range:string * error: string
 
 let findLibraryWithNpmDeps (project: CrackedFsproj) =
     [ yield project.ProjectFile
@@ -79,20 +82,32 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
     let dependencies : JProperty list = [
         if content.ContainsKey "dependencies"
         then yield! (content.["dependencies"] :?> JObject).Properties() |> List.ofSeq
+    ]
 
+    let devDependencies = [
         if content.ContainsKey "devDependencies"
         then yield! (content.["devDependencies"] :?> JObject).Properties() |> List.ofSeq
-
-        if content.ContainsKey "peerDependencies"
-        then yield! (content.["peerDependencies"] :?> JObject).Properties() |> List.ofSeq
     ]
 
     let topLevelPackages = ResizeArray [
-        for package in dependencies -> {
-            Name = package.Name;
-            Range = Some (SemVer.Range(package.Value.ToObject<string>()));
-            Installed = None
-        }
+        yield! [
+            for package in dependencies -> {
+                Name = package.Name;
+                Range = Some (SemVer.Range(package.Value.ToObject<string>()));
+                Installed = None
+                DevDependency = false
+            }
+        ]
+
+        yield! [
+            for package in devDependencies -> {
+                Name = package.Name;
+                Range = Some (SemVer.Range(package.Value.ToObject<string>()));
+                Installed = None
+                DevDependency = true
+            }
+        ]
+
     ]
 
     if needsNodeModules packageJson
@@ -194,8 +209,15 @@ let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
     | Some version ->
         let hint =
             match nodeManager with
-            | NodeManager.Npm -> sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name version
-            | NodeManager.Yarn -> sprintf "%s add %s@%s" nodeManager.CommandName pkg.Name version
+            | NodeManager.Npm ->
+                if pkg.DevDependency
+                then sprintf "%s install %s@%s --save-dev" nodeManager.CommandName pkg.Name version
+                else sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name version
+
+            | NodeManager.Yarn ->
+                if pkg.DevDependency
+                then sprintf "%s add %s@%s --dev" nodeManager.CommandName pkg.Name version
+                else sprintf "%s add %s@%s" nodeManager.CommandName pkg.Name version
 
         logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
 
@@ -223,18 +245,39 @@ let rec autoResolveActions
                     let error = "Could not find a version that satisfies the required range"
                     [ ResolveAction.UnableToResolve(library.Name, package.Name, package.RawVersion, error) ]
                 | Some version ->
-                    [ ResolveAction.Install(library.Name, package.Name, version) ]
+                    if package.DevDependency then
+                        [ ResolveAction.InstallDev(library.Name, package.Name, version, package.RawVersion) ]
+                    else
+                        [ ResolveAction.Install(library.Name, package.Name, version, package.RawVersion) ]
 
             | Some installedPackage ->
                 // already installed -> check whether it falls under the required constraint
-                match installedPackage.Range, installedPackage.Installed with
-                | Some range, Some installedVersion ->
+                match  installedPackage.Installed with
+                | Some installedVersion ->
+                    // check installed version satisfies package constraint
                     match package.Constraint with
                     | Some requiredRange  ->
                         if requiredRange.IsSatisfied installedVersion
                         then
-                            // no need to do anything
-                            [ ]
+                            // versions are correct, check if they are both devDepdendenicies or both dependencies
+                            if package.DevDependency && not installedPackage.DevDependency then
+                                [
+                                    // uninstall from "dependencies"
+                                    ResolveAction.Uninstall(library.Name, installedPackage.Name, installedVersion.ToString())
+                                    // re-install as "devDependency"
+                                    ResolveAction.InstallDev(library.Name, package.Name, installedVersion.ToString(), package.RawVersion)
+                                ]
+                            elif not package.DevDependency && installedPackage.DevDependency then
+                                [
+                                    // uninstall from "devDependencies"
+                                    ResolveAction.UninstallDev(library.Name, installedPackage.Name, installedVersion.ToString())
+                                    // re-install into "dependencies"
+                                    ResolveAction.Install(library.Name, package.Name, installedVersion.ToString(), package.RawVersion)
+                                ]
+                            else
+                                // both are either "devDependencies" or "dependencies"
+                                // nothing left to do
+                                [ ]
                         else
                             // installed version falls outside of required range
                             // resolve version from required range
@@ -243,9 +286,13 @@ let rec autoResolveActions
                             | Some resolvedVersion ->
                                 [
                                     // uninstall current
-                                    ResolveAction.Uninstall(library.Name, installedPackage.Name, installedVersion.ToString())
-                                    // resolve using the resolved version
-                                    ResolveAction.Install(library.Name, package.Name, resolvedVersion)
+                                    if installedPackage.DevDependency
+                                    then yield ResolveAction.UninstallDev(library.Name, installedPackage.Name, installedVersion.ToString())
+                                    else yield ResolveAction.Uninstall(library.Name, installedPackage.Name, installedVersion.ToString())
+                                    // Re-install using the resolved version
+                                    if package.DevDependency
+                                    then yield ResolveAction.InstallDev(library.Name, package.Name, resolvedVersion, package.RawVersion)
+                                    else yield ResolveAction.Install(library.Name, package.Name, resolvedVersion, package.RawVersion)
                                 ]
 
                             | None ->
@@ -359,22 +406,189 @@ let defaultCliArgs = {
     ResolvePreview = false
 }
 
+let resolveConflicts (actions: ResolveAction list) =
+    // remove duplicate uninstall commands
+    let distinctUninstallActions =
+        actions
+        |> List.choose (function
+            | ResolveAction.Uninstall(library, pkg, version) -> Some(library, pkg, version, false)
+            | ResolveAction.UninstallDev(library, pkg, version) -> Some (library, pkg, version, true)
+            | _ -> None)
+        |> List.distinctBy (fun (lib, pkg, version, isDev) -> pkg)
+        |> List.map (fun (lib, pkg, version, isDev) ->
+            if isDev
+            then ResolveAction.UninstallDev(lib, pkg, version)
+            else ResolveAction.Uninstall(lib, pkg, version))
+
+    let distinctInstallActions =
+        actions
+        |> List.choose (function
+            | ResolveAction.Install(lib, package, version, range) -> Some(lib, package, version, range)
+            | _ -> None)
+        // distinct by the combination of version and range
+        |> List.distinctBy (fun (_, _, version, range) -> version, range)
+        // group duplicate package install commands
+        // try find a version that satisfies all ranges
+        |> List.groupBy (fun (_, pkg, _, _) -> pkg)
+        |> List.map (fun (pkgName, packages) ->
+            match packages with
+            | [ (lib, _, version, range) ] ->
+                // make sure the library did not have an unresolvable version
+                actions
+                |> List.choose (function
+                    | ResolveAction.UnableToResolve(lib, pkg, range, error) when pkg = pkgName -> Some(SemVer.Range(range))
+                    | _ -> None)
+                |> List.tryHead
+                |> function
+                    | None -> ResolveAction.Install(lib, pkgName, version, range)
+                    | Some problematicRange ->
+                        if not (problematicRange.IsSatisfied (SemVer.Version(version)))
+                        then
+                            let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" version range (problematicRange.ToString())
+                            ResolveAction.UnableToResolve(lib, pkgName, problematicRange.ToString(), errorMsg)
+                        else
+                            ResolveAction.Install(lib, pkgName, version, range)
+
+            | multiplePackages ->
+                let libName = multiplePackages |> List.map (fun (lib, _, _, _) -> lib) |> List.head
+                let ranges = multiplePackages |> List.map (fun (_, _, _, range) -> SemVer.Range range)
+                let versions = multiplePackages |> List.map (fun (_, _, version, _ ) -> SemVer.Version version)
+                // find a version that satisfies all ranges
+                versions
+                |> List.tryFind (fun version -> ranges |> List.forall (fun range -> range.IsSatisfied version))
+                |> function
+                    | None ->
+                        // could not find a version that satisfies all ranges
+                        // find a sample version that doesn't satisfy a sample range and report them
+                        let rangeStrings = multiplePackages |> List.map (fun (_, _, _, range) -> range)
+                        let errorMsg = sprintf "Could not find a version that satisfies the ranges [%s]" (String.concat ", " rangeStrings)
+                        ResolveAction.UnableToResolve(libName, pkgName, String.concat ", " rangeStrings, errorMsg)
+
+                    | Some version ->
+                        // found a version that satisfies all versions!
+                        // look ranges that weren't resolved
+                        let rangeStrings = multiplePackages |> List.map (fun (_, _, _, range) -> range)
+
+                        actions
+                        |> List.choose (function
+                            | ResolveAction.UnableToResolve(lib, pkg, range, error) when pkg = pkgName -> Some(SemVer.Range(range))
+                            | _ -> None)
+                        |> List.tryHead
+                        |> function
+                            | None ->
+                                ResolveAction.Install(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
+                            | Some problematicRange ->
+                                if not (problematicRange.IsSatisfied version)
+                                then
+                                    let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" (version.ToString()) (String.concat " && " rangeStrings) (problematicRange.ToString())
+                                    ResolveAction.UnableToResolve(libName, pkgName, problematicRange.ToString(), errorMsg)
+                                else
+                                    ResolveAction.Install(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
+        )
+
+    let distinctInstallDevActions =
+        actions
+        |> List.choose (function
+            | ResolveAction.InstallDev(lib, package, version, range) -> Some(lib, package, version, range)
+            | _ -> None)
+        // distinct by the combination of version and range
+        |> List.distinctBy (fun (_, _, version, range) -> version, range)
+        // group duplicate package install commands
+        // try find a version that satisfies all ranges
+        |> List.groupBy (fun (_, pkg, _, _) -> pkg)
+        |> List.map (fun (pkgName, packages) ->
+            match packages with
+            | [ (lib, _, version, range) ] ->
+                // make sure the library was did not have an unresolvable version
+                actions
+                |> List.choose (function
+                    | ResolveAction.UnableToResolve(lib, pkg, range, error) when pkg = pkgName -> Some(SemVer.Range(range))
+                    | _ -> None)
+                |> List.tryHead
+                |> function
+                    | None -> ResolveAction.InstallDev(lib, pkgName, version, range)
+                    | Some problematicRange ->
+                        if not (problematicRange.IsSatisfied (SemVer.Version(version)))
+                        then
+                            let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" version range (problematicRange.ToString())
+                            ResolveAction.UnableToResolve(lib, pkgName, problematicRange.ToString(), errorMsg)
+                        else
+                            ResolveAction.InstallDev(lib, pkgName, version, range)
+
+            | multiplePackages ->
+                let libName = multiplePackages |> List.map (fun (lib, _, _, _) -> lib) |> List.head
+                let ranges = multiplePackages |> List.map (fun (_, _, _, range) -> SemVer.Range range)
+                let versions = multiplePackages |> List.map (fun (_, _, version, _ ) -> SemVer.Version version)
+                // find a version that satisfies all ranges
+                versions
+                |> List.tryFind (fun version -> ranges |> List.forall (fun range -> range.IsSatisfied version))
+                |> function
+                    | None ->
+                        // could not find a version that satisfies all ranges
+                        // find a sample version that doesn't satisfy a sample range and report them
+                        let rangeStrings = multiplePackages |> List.map (fun (_, _, _, range) -> range)
+                        let errorMsg = sprintf "Could not find a version that satisfies the ranges [%s]" (String.concat ", " rangeStrings)
+                        ResolveAction.UnableToResolve(libName, pkgName, String.concat ", " rangeStrings, errorMsg)
+
+                    | Some version ->
+                        // found a version that satisfies all versions!
+                        // look ranges that weren't resolved
+                        let rangeStrings = multiplePackages |> List.map (fun (_, _, _, range) -> range)
+
+                        actions
+                        |> List.choose (function
+                            | ResolveAction.UnableToResolve(lib, pkg, range, error) when pkg = pkgName -> Some(SemVer.Range(range))
+                            | _ -> None)
+                        |> List.tryHead
+                        |> function
+                            | None ->
+                                ResolveAction.InstallDev(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
+                            | Some problematicRange ->
+                                if not (problematicRange.IsSatisfied version)
+                                then
+                                    let errorMsg = sprintf "Resolved version %s satisfies [%s] but not %s" (version.ToString()) (String.concat " && " rangeStrings) (problematicRange.ToString())
+                                    ResolveAction.UnableToResolve(libName, pkgName, problematicRange.ToString(), errorMsg)
+                                else
+                                    ResolveAction.InstallDev(libName, pkgName, version.ToString(), String.concat " && " rangeStrings)
+        )
+
+    let unresolvableActions =
+        actions
+        |> List.filter (function
+            | ResolveAction.UnableToResolve (_) -> true
+            | _ -> false)
+
+    List.concat [
+        distinctUninstallActions
+        distinctInstallDevActions
+        distinctInstallActions
+        unresolvableActions
+    ]
+
 let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: ResolveAction list) =
+    let actions = resolveConflicts actions
+
     let uninstallPackages =
         actions |> List.choose (function
-        | ResolveAction.Uninstall(_, pkg, _)-> Some pkg
+        | ResolveAction.Uninstall(_, pkg, _) -> Some pkg
+        | ResolveAction.UninstallDev(_, pkg, _) -> Some pkg
         | _ -> None)
 
-    let installPackages =
+    let dependenciesToInstall =
         actions |> List.choose (function
-        | ResolveAction.Install(_, pkg, version)-> Some (pkg, version)
+        | ResolveAction.Install(_, pkg, version, range)-> Some (pkg, version)
+        | _ -> None)
+
+    let devDependenciesToInstall =
+        actions |> List.choose (function
+        | ResolveAction.InstallDev(_, pkg, version, range)-> Some (pkg, version)
         | _ -> None)
 
     if not (List.isEmpty uninstallPackages) then
         // then there some packages we need to uninstall first
         let program, args =
             match manager with
-            | NodeManager.Npm -> "npm", [ yield "uninstall"; yield! uninstallPackages; yield "--save" ]
+            | NodeManager.Npm -> "npm", [ yield "uninstall"; yield! uninstallPackages ]
             | NodeManager.Yarn -> "yarn", [ yield "remove"; yield! uninstallPackages ]
 
         logger.Information("Uninstalling [{Libraries}]", String.concat ", " uninstallPackages)
@@ -385,10 +599,10 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         |> Proc.run
         |> ignore
 
-    if not (List.isEmpty installPackages) then
+    if not (List.isEmpty dependenciesToInstall) then
         // there are packages that need to be installed
         let packagesToInstall =
-            installPackages
+            dependenciesToInstall
             |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
 
         let program, args =
@@ -400,6 +614,25 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (String.concat ", " packagesToInstall))
+        |> CreateProcess.redirectOutput
+        |> Proc.run
+        |> ignore
+
+    if not (List.isEmpty devDependenciesToInstall) then
+        // there are packages that need to be installed
+        let packagesToInstall =
+            devDependenciesToInstall
+            |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
+
+        let program, args =
+            match manager with
+            | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save-dev" ]
+            | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall; yield "--dev" ]
+
+        logger.Information("Installing dev [{Libraryies}]", String.concat ", " packagesToInstall)
+        CreateProcess.xplatCommand program args
+        |> CreateProcess.withWorkingDirectory cwd
+        |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing dev %s" (String.concat ", " packagesToInstall))
         |> CreateProcess.redirectOutput
         |> Proc.run
         |> ignore
@@ -496,8 +729,8 @@ let rec private runner (args : FemtoArgs) =
                 for library in libraries do
                     for pkg in library.NpmDependencies do
                         logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
-                logger.Warning "Could not locate package.json file"
 
+                logger.Warning "Could not locate package.json file"
                 FemtoResult.MissingPackageJson
 
             | Some packageJson ->
@@ -524,16 +757,21 @@ let rec private runner (args : FemtoArgs) =
                     if args.ResolvePreview then
                         logger.Information("Previewing required actions for package resolution")
                         let resolveActions = autoResolve nodeManager libraries installedPackages []
-                        if List.isEmpty resolveActions then
+                        let simplifiedActions = resolveConflicts resolveActions
+                        if List.isEmpty simplifiedActions then
                             logger.Information("√ Required packages are already resolved")
                             FemtoResult.ValidationSucceeded
                         else
-                        for action in resolveActions do
+                        for action in simplifiedActions do
                             match action with
-                            | ResolveAction.Install(lib, pkg, version) ->
-                                logger.Information("{Library} -> Install {Package} version {Version}", lib, pkg, version)
+                            | ResolveAction.Install(lib, pkg, version, range) ->
+                                logger.Information("{Library} -> Install {Package} version {Version} satisfies [{Range}]", lib, pkg, version, range)
+                            | ResolveAction.InstallDev(lib, pkg, version, range) ->
+                                logger.Information("{Library} -> Install {Package} (dev) version {Version} satisfies [{Range}]", lib, pkg, version, range)
                             | ResolveAction.Uninstall(lib, pkg, version) ->
                                 logger.Information("{Library} -> Uninstall {Package} version {Version}", lib, pkg, version)
+                            | ResolveAction.UninstallDev(lib, pkg, version) ->
+                                logger.Information("{Library} -> Uninstall {Package} (dev) version {Version}", lib, pkg, version)
                             | ResolveAction.UnableToResolve(lib, pkg, range, error) ->
                                 logger.Error("{Library} -> Unable to resolve version for {Package} within {Range}", lib, pkg, range)
                                 logger.Error(error)
