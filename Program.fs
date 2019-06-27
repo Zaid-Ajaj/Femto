@@ -647,6 +647,25 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
         | otherwise ->
             ignore()
 
+let private validateProject (library : LibraryWithNpmDeps) =
+    (true, library.NpmDependencies)
+    ||> List.fold (fun (state : bool) (pkg : NpmDependency) ->
+        logger.Information("{Library} requires npm package {Package}", library.Name, pkg.Name)
+        logger.Information("  | -- Required range {Range}", pkg.RawVersion)
+        logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
+        let isCurrentPkgOk =
+            match getSatisfyingPackageVersion NodeManager.Npm pkg with
+            | Some version ->
+                logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
+                true
+            | None ->
+                logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
+                false
+
+        state && isCurrentPkgOk
+    )
+
+
 let rec private runner (args : FemtoArgs) =
 
     match args.Project, args.PreviewMetadata with
@@ -689,24 +708,21 @@ let rec private runner (args : FemtoArgs) =
             | Error er ->
                 logger.Error("Error while analyzing the project's structure and dependencies")
                 FemtoResult.ValidationFailed
-            | Ok _ ->
-                let libraryName = Path.GetFileNameWithoutExtension project
-                let npmDependencies = Npm.parseDependencies project
-                if List.isEmpty npmDependencies then
-                    logger.Warning("Project {Project} does not contain npm dependency metadata", libraryName)
-                    FemtoResult.ProjectCrackerFailed
-                else
-                    for pkg in npmDependencies do
-                        logger.Information("{Library} requires npm package {Package}", libraryName, pkg.Name)
-                        logger.Information("  | -- Required range {Range}", pkg.RawVersion)
-                        logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
-                        match getSatisfyingPackageVersion NodeManager.Npm pkg with
-                        | Some version ->
-                            logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
-                        | None ->
-                            logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
+            | Ok crackedProject ->
+                let libraries = findLibraryWithNpmDeps crackedProject
 
+                let isValid =
+                    (true, libraries)
+                    ||> List.fold (fun (state : bool) (library : LibraryWithNpmDeps) ->
+                        validateProject library && state
+                    )
+
+                if isValid then
+                    logger.Information("Validation result: Success")
                     FemtoResult.ValidationSucceeded
+                else
+                    logger.Error("Validation result: Failed")
+                    FemtoResult.ValidationFailed
 
     | Some project, false ->
         logger.Information("Analyzing project {Project}", project)
