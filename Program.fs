@@ -834,8 +834,8 @@ let previewResolutionActions
                 logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
                 let installationCommand =
                     nodeCmd
-                      (sprintf "npm install %s@%s --save" package version)
-                      (sprintf "yarn add %s@%s" package version)
+                      (sprintf "npm install %s@%s --save-dev" package version)
+                      (sprintf "yarn add %s@%s --dev" package version)
 
                 let uninstallCommand =
                     nodeCmd
