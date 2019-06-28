@@ -763,6 +763,15 @@ let previewResolutionActions
                       (sprintf "yarn add %s@%s" package version)
                 logger.Information("  | -- Resolve manually using '{Command}'", installationCommand)
 
+            | [ ResolveAction.InstallDev(_, _, version, range) ] ->
+                if range.Contains "&&"
+                then logger.Information("  | -- Required version constraint from multiple projects [{Range}]", package, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save-dev" package version)
+                      (sprintf "yarn add %s@%s --dev" package version)
+                logger.Information("  | -- Resolve manually using '{Command}'", installationCommand)
+
             | [ ResolveAction.UninstallDev(_); ResolveAction.Install(_, _, version, range) ] ->
                 logger.Information("  | -- {Package} was installed into \"devDependencies\" instead of \"dependencies\"", package)
                 logger.Information("  | -- Re-install as a production dependency")
@@ -1004,7 +1013,7 @@ let parseArgs (cliArgs : CLIArguments list) =
         | Version :: rest ->
             apply rest { res with DiplayVersion = true }
 
-        | _ ->
+        | [ ] ->
             res
 
     let cwd = Environment.CurrentDirectory
