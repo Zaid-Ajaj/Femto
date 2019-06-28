@@ -970,7 +970,17 @@ let rec private runner (args : FemtoArgs) =
                         let resolveActions = autoResolve nodeManager libraries installedPackages []
                         let simplifiedActions = resolveConflicts resolveActions
                         previewResolutionActions simplifiedActions (List.ofSeq installedPackages) libraries nodeManager
-                        FemtoResult.ValidationSucceeded
+                        let allResolutionActionsCanExecute =
+                            simplifiedActions
+                            |> List.exists (function
+                                | ResolveAction.UnableToResolve(_) -> true
+                                | _ -> false)
+                            |> not
+
+                        if allResolutionActionsCanExecute
+                        then FemtoResult.ValidationSucceeded
+                        else FemtoResult.ValidationFailed
+
                     elif args.Resolve then
                         let resolveActions = autoResolve nodeManager libraries installedPackages []
                         if List.isEmpty resolveActions then
