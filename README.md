@@ -1,6 +1,6 @@
 # Femto  [![Nuget](https://img.shields.io/nuget/v/Femto.svg?colorB=green)](https://www.nuget.org/packages/Femto)
 
-Femto is an experimental CLI tool that verifies the compatibility of npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings.
+Femto is CLI tool that manages the npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings.
 
 ### Install
 ```
@@ -18,14 +18,25 @@ femto ./Client.fsproj
 ```
 Here is an example output:
 ```bash
-c:\>femto ./App.fsproj
-[01:36:31 INF] Analyzing project c:\App.fsproj
-[01:36:34 INF]
-[01:36:34 INF] Fable.DateFunctions depends on npm package date-fns
-[01:36:34 INF]   | -- Required range >= 1.30.0 found in project file
-[01:36:34 INF]   | -- Used range ^1.28.2 in package.json
-[01:36:34 ERR]   | -- Installed version 1.29.0 does not satisfy required range >= 1.30.0
-[01:36:34 ERR]   | -- Resolve this issue using 'npm install date-fns@1.31.0'
+c:\projects\elmish-getting-started\src> femto
+[18:17:09 INF] Analyzing project c:/projects/elmish-getting-started/src/App.fsproj
+[18:17:11 INF] Found package.json in c:\projects\elmish-getting-started
+[18:17:11 INF] Using npm for package management
+[18:17:14 INF] Elmish.AnimatedTree requires npm package react-spring
+[18:17:14 INF]   | -- Required range >= 8.0.0 found in project file
+[18:17:14 INF]   | -- Used range ^8.0.1 in package.json
+[18:17:14 INF]   | -- Found installed version 8.0.1
+[18:17:14 INF]   | -- react-spring was installed into "devDependencies" instead of "dependencies"
+[18:17:14 INF]   | -- Re-install as a production dependency
+[18:17:14 INF]   | -- Resolve manually using 'npm uninstall react-spring' then 'npm install react-spring@8.0.1 --save'
+[18:17:14 INF] Fable.DateFunctions requires npm package date-fns
+[18:17:14 INF]   | -- Required range >= 1.30 < 2.0 found in project file
+[18:17:14 INF]   | -- Missing date-fns in package.json
+[18:17:14 INF]   | -- Resolve manually using 'npm install date-fns@1.30.1 --save'
+[18:17:14 INF] Elmish.SweetAlert requires npm package sweetalert2
+[18:17:14 INF]   | -- Required range >= 8.5 found in project file
+[18:17:14 INF]   | -- Missing sweetalert2 in package.json
+[18:17:14 INF]   | -- Resolve manually using 'npm install sweetalert2@8.5.0 --save'
 ```
 
 ### Automatic Package resolution with `--resolve`
@@ -39,14 +50,6 @@ This command checks for missing packages and packages of which the installed ver
  - If a package is missing then it is installed.
  - If a package version doesn't satisfy requirements, then a proper version is resolved and the package is replaced with the new resolved version by uninstalling the current one and installing the correct package.
  - If a package version doesn't satisfy requirements *and* a version cannot be resolved that satisfies requirements, then a resolution error is logged.
-
-### Preview required resolution actions with `--preview`
-You can see what Femto will attempt to execute without actually executing the commands themselves using `--preview`
-```
-femto --preview
-
-femto --preview ./src/Client.fsproj
-```
 
 ### Library Authors
 
@@ -68,6 +71,18 @@ You can customize the resolution strategy by adding `ResolutionStrategy` attribu
 <PropertyGroup>
   <NpmDependencies>
       <NpmPackage Name="date-fns" Version=">= 1.30.0" ResolutionStrategy="max" />
+  </NpmDependencies>
+</PropertyGroup>
+```
+
+### Development Dependency
+
+You can specify whether the npm package your library depends upon is actually a development dependency instead a production dependency using the `DevDependency` attribute. Package resolution take development dependencies into account and if the developer had installed the package by mistake in production dependencies then the automatic resolver will un-install it and re-install it a development dependency.
+
+```xml
+<PropertyGroup>
+  <NpmDependencies>
+      <NpmPackage Name="date-fns" Version=">= 1.30.0" DevDependency="true" />
   </NpmDependencies>
 </PropertyGroup>
 ```
