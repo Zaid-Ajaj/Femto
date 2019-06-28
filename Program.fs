@@ -392,18 +392,18 @@ type FemtoArgs = {
     /// The project on which the analysis is performed
     Project: string option
     /// When set to true, validates the metadata of the npm dependencies of a Fable library
-    PreviewMetadata: bool
+    Validate: bool
     /// When set to true, performs the required actions for full package resolution
     Resolve : bool
-    /// When set to true, shows the actions required for full package resolution without actually performing them
-    ResolvePreview: bool
+    /// When set to true, displays the version of Femto
+    DiplayVersion : bool
 }
 
 let defaultCliArgs = {
     Project = None
-    PreviewMetadata = false
+    Validate = false
     Resolve = false
-    ResolvePreview = false
+    DiplayVersion = false
 }
 
 let resolveConflicts (actions: ResolveAction list) =
@@ -425,8 +425,8 @@ let resolveConflicts (actions: ResolveAction list) =
         |> List.choose (function
             | ResolveAction.Install(lib, package, version, range) -> Some(lib, package, version, range)
             | _ -> None)
-        // distinct by the combination of version and range
-        |> List.distinctBy (fun (_, _, version, range) -> version, range)
+        // distinct by the combination of package, version and range
+        |> List.distinctBy (fun (_, pkgName, version, range) -> pkgName, version, range)
         // group duplicate package install commands
         // try find a version that satisfies all ranges
         |> List.groupBy (fun (_, pkg, _, _) -> pkg)
@@ -491,8 +491,8 @@ let resolveConflicts (actions: ResolveAction list) =
         |> List.choose (function
             | ResolveAction.InstallDev(lib, package, version, range) -> Some(lib, package, version, range)
             | _ -> None)
-        // distinct by the combination of version and range
-        |> List.distinctBy (fun (_, _, version, range) -> version, range)
+        // distinct by the combination of package, version and range
+        |> List.distinctBy (fun (_, pkgName, version, range) -> pkgName, version, range)
         // group duplicate package install commands
         // try find a version that satisfies all ranges
         |> List.groupBy (fun (_, pkg, _, _) -> pkg)
@@ -610,7 +610,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save" ]
             | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall ]
 
-        logger.Information("Installing [{Libraryies}]", String.concat ", " packagesToInstall)
+        logger.Information("Installing dependencies [{Libraryies}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (String.concat ", " packagesToInstall))
@@ -629,7 +629,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save-dev" ]
             | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall; yield "--dev" ]
 
-        logger.Information("Installing dev [{Libraryies}]", String.concat ", " packagesToInstall)
+        logger.Information("Installing development dependencies [{Libraryies}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing dev %s" (String.concat ", " packagesToInstall))
@@ -649,7 +649,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
 
 let private validateProject (library : LibraryWithNpmDeps) =
     (true, library.NpmDependencies)
-    ||> List.fold (fun (state : bool) (pkg : NpmDependency) ->
+    ||> List.fold (fun (state: bool)  (pkg: NpmDependency) ->
         logger.Information("{Library} requires npm package {Package}", library.Name, pkg.Name)
         logger.Information("  | -- Required range {Range}", pkg.RawVersion)
         logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
@@ -665,10 +665,172 @@ let private validateProject (library : LibraryWithNpmDeps) =
         state && isCurrentPkgOk
     )
 
+let previewResolutionActions
+    (actions: ResolveAction list)
+    (installedPackages : InstalledNpmPackage list)
+    (libraries : LibraryWithNpmDeps list)
+    (nodeManager: NodeManager) =
+
+    // group resolution actions by library/F# project
+    let actionsByLibrary =
+        actions
+        |> List.groupBy (function
+            | ResolveAction.Install(lib, _, _, _) -> lib
+            | ResolveAction.InstallDev(lib, _,_,_) -> lib
+            | ResolveAction.Uninstall(lib, _, _) -> lib
+            | ResolveAction.UninstallDev(lib, _, _) -> lib
+            | ResolveAction.UnableToResolve(lib, _, _, _) -> lib)
+
+    // libraries without required resolution action will also be logged
+    // telling the user that everything is OK
+    let librariesWithoutActions =
+        let librariesWithActions = List.map fst actionsByLibrary
+        libraries
+        |> List.filter (fun lib -> not (librariesWithActions |> List.contains lib.Name))
+
+    for library in librariesWithoutActions do
+        for npmPackage in library.NpmDependencies do
+            logger.Information("{Library} requires npm package {Package}", library.Name, npmPackage.Name)
+            logger.Information("  | -- Required range {Range} found in project file", npmPackage.Constraint |> Option.map string |> Option.defaultValue npmPackage.RawVersion)
+            let installedPackage = installedPackages |> List.tryFind (fun pkg -> pkg.Name = npmPackage.Name)
+            match installedPackage with
+            | None ->
+                // since the library did not require actions, this will never be logged actually
+                logger.Error("  | -- Missing {package} in package.json", npmPackage.Name)
+            | Some package ->
+                match package.Range, package.Installed with
+                | Some range, Some version ->
+                    logger.Information("  | -- Used range {Range} in package.json", range.ToString())
+                    match npmPackage.Constraint with
+                    | Some requiredRange when range.IsSatisfied version ->
+                        logger.Information("  | -- √ Installed version {Version} satisfies required range {Range}", version.ToString(), requiredRange.ToString())
+                    | _ ->
+                        // since the library did not require actions, this will never be logged actually
+                        logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), npmPackage.Constraint |> Option.map string |> Option.defaultValue npmPackage.RawVersion)
+
+                | _ ->
+                    ignore()
+
+    for (library, libActions) in actionsByLibrary do
+        // group actions required by package
+        let actionsByPackage =
+            libActions
+            |> List.groupBy (function
+                | ResolveAction.Install(_, pkg, _, _) -> pkg
+                | ResolveAction.InstallDev(_, pkg,_,_) -> pkg
+                | ResolveAction.Uninstall(_, pkg, _) -> pkg
+                | ResolveAction.UninstallDev(_, pkg, _) -> pkg
+                | ResolveAction.UnableToResolve(_, pkg, _, _) -> pkg)
+
+        let currentLibrary = libraries |> List.find (fun lib -> lib.Name = library)
+
+        for (package, pkgActions) in actionsByPackage do
+            // using List.find because we can assume that the dependency was part of the current library
+            let requiredPackage = currentLibrary.NpmDependencies |> List.find (fun pkg -> pkg.Name = package)
+            logger.Information("{Library} requires npm package {Package}", library, package)
+            logger.Information("  | -- Required range {Range} found in project file", requiredPackage.Constraint |> Option.map string |> Option.defaultValue requiredPackage.RawVersion)
+
+            let installedPackage = installedPackages |> List.tryFind (fun pkg -> pkg.Name = package)
+            match installedPackage with
+            | None ->
+                logger.Information("  | -- Missing {package} in package.json", package)
+            | Some installed ->
+                match installed.Range, installed.Installed with
+                | Some range, Some version ->
+                    logger.Information("  | -- Used range {Range} in package.json", range.ToString())
+                    logger.Information("  | -- Found installed version {Version}", version.ToString())
+                | _ ->
+                    ignore()
+
+            let nodeCmd npm yarn =
+                match nodeManager with
+                | NodeManager.Npm -> npm
+                | NodeManager.Yarn -> yarn
+
+            // package actions one of the following
+            // - Install missing package
+            // - Uninstall from "devDependencies" and re-install into "dependencies"
+            // - Uninstall from "dependencies" and re-install "devDependencies"
+            // - Uninstall old (or "too new") package and re-install based on resolved version
+            // - Unable to resolve with errors
+            match pkgActions with
+            | [ ResolveAction.Install(_, _, version, range) ] ->
+                if range.Contains "&&"
+                then logger.Information("  | -- Required version constraint from multiple projects [{Range}]", package, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save" package version)
+                      (sprintf "yarn add %s@%s" package version)
+                logger.Information("  | -- Resolve manually using '{Command}'", installationCommand)
+
+            | [ ResolveAction.UninstallDev(_); ResolveAction.Install(_, _, version, range) ] ->
+                logger.Information("  | -- {Package} was installed into \"devDependencies\" instead of \"dependencies\"", package)
+                logger.Information("  | -- Re-install as a production dependency")
+                if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save" package version)
+                      (sprintf "yarn add %s@%s" package version)
+
+                let uninstallCommand =
+                    nodeCmd
+                        (sprintf "npm uninstall %s" package)
+                        (sprintf "yarn remove %s" package)
+
+                logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
+
+            | [ ResolveAction.Uninstall(_); ResolveAction.InstallDev(_, _, version, range) ] ->
+                logger.Information("  | -- {Package} was installed into \"dependencies\" instead of \"devDependencies\"", package)
+                logger.Information("  | -- Re-install as a development dependency")
+                if range.Contains "&&" then logger.Information("  | -- {Package} specified from multiple projects to satisfy {Range}", package, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save-dev" package version)
+                      (sprintf "yarn add %s@%s --dev" package version)
+
+                let uninstallCommand =
+                    nodeCmd
+                        (sprintf "npm uninstall %s" package)
+                        (sprintf "yarn remove %s" package)
+
+                logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
+
+            | [ ResolveAction.Uninstall(_, _, installedVersion); ResolveAction.Install(_, _, version, range) ] ->
+                if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
+                logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save" package version)
+                      (sprintf "yarn add %s@%s" package version)
+
+                let uninstallCommand =
+                    nodeCmd
+                        (sprintf "npm uninstall %s" package)
+                        (sprintf "yarn remove %s" package)
+
+                logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
+
+            // UnableToResolve can come in pairs: one original and one derived
+            | [ ResolveAction.UnableToResolve(_, _,_ , error); ResolveAction.UnableToResolve(_) ] ->
+                logger.Error("  | -- " + error)
+
+            // UnableToResolve can come in pairs: one original and one derived
+            // but sometimes an obsolete "uninstall" action will stay behind as well
+            | [ (ResolveAction.Uninstall(_) | ResolveAction.UninstallDev(_)); ResolveAction.UnableToResolve(_, _,_ , error); ResolveAction.UnableToResolve(_) ] ->
+                logger.Error("  | -- " + error)
+
+            | [ ResolveAction.UnableToResolve(_, _, _, error) ] ->
+                logger.Error("  | -- " + error)
+
+            | _ ->
+                ignore()
 
 let rec private runner (args : FemtoArgs) =
-
-    match args.Project, args.PreviewMetadata with
+    if args.DiplayVersion then
+        printfn "%s" Version.VERSION
+        FemtoResult.ValidationSucceeded
+    else
+    match args.Project, args.Validate with
     | None, _ ->
         logger.Error("Project path was not correctly provided")
         FemtoResult.ProjectFileNotFound
@@ -770,28 +932,10 @@ let rec private runner (args : FemtoArgs) =
 
                     let installedPackages = findInstalledPackages packageJson
                     logger.Information("Using {Manager} for package management", nodeManager.CommandName)
-                    if args.ResolvePreview then
-                        logger.Information("Previewing required actions for package resolution")
+                    if not args.Resolve then
                         let resolveActions = autoResolve nodeManager libraries installedPackages []
                         let simplifiedActions = resolveConflicts resolveActions
-                        if List.isEmpty simplifiedActions then
-                            logger.Information("√ Required packages are already resolved")
-                            FemtoResult.ValidationSucceeded
-                        else
-                        for action in simplifiedActions do
-                            match action with
-                            | ResolveAction.Install(lib, pkg, version, range) ->
-                                logger.Information("{Library} -> Install {Package} version {Version} satisfies [{Range}]", lib, pkg, version, range)
-                            | ResolveAction.InstallDev(lib, pkg, version, range) ->
-                                logger.Information("{Library} -> Install {Package} (dev) version {Version} satisfies [{Range}]", lib, pkg, version, range)
-                            | ResolveAction.Uninstall(lib, pkg, version) ->
-                                logger.Information("{Library} -> Uninstall {Package} version {Version}", lib, pkg, version)
-                            | ResolveAction.UninstallDev(lib, pkg, version) ->
-                                logger.Information("{Library} -> Uninstall {Package} (dev) version {Version}", lib, pkg, version)
-                            | ResolveAction.UnableToResolve(lib, pkg, range, error) ->
-                                logger.Error("{Library} -> Unable to resolve version for {Package} within {Range}", lib, pkg, range)
-                                logger.Error(error)
-
+                        previewResolutionActions simplifiedActions (List.ofSeq installedPackages) libraries nodeManager
                         FemtoResult.ValidationSucceeded
                     elif args.Resolve then
                         let resolveActions = autoResolve nodeManager libraries installedPackages []
@@ -819,42 +963,48 @@ let rec private runner (args : FemtoArgs) =
 
 
 type CLIArguments =
-    | [<MainCommand; ExactlyOnce>] Project of path : string
+    | [<MainCommand>] Project of path : string
     | Validate
     | Resolve
-    | Preview
+    | Version
 
     interface IArgParserTemplate with
 
         member this.Usage =
             match this with
-            | Project _ -> "specify the path to the F# project"
-            | Validate -> "check that the XML tags used in the F# project file are parsable and a npm package version can be calculated"
-            | Resolve -> "resolve and install required packages"
-            | Preview -> "preview required actions for package resolution"
+            | Project _ -> "specify the path to the F# project."
+            | Validate -> "check that the XML tags used in the F# project file are parsable and a npm package version can be calculated."
+            | Resolve -> "resolve and install required packages."
+            | Version -> "display the current version of Femto."
 
 let parseArgs (cliArgs : CLIArguments list) =
     let rec apply (cliArgs : CLIArguments list) (res : FemtoArgs) =
         match cliArgs with
-        | Project project::rest ->
+        | Project project :: rest ->
             let project =
-                if Path.isRelativePath project then
-                    Path.GetFullPath project
+                if IO.Directory.Exists project then
+                    IO.Directory.GetFiles project
+                    |> Seq.tryFind (fun file -> file.EndsWith ".fsproj")
+                    |> Option.map Path.normalizeFullPath
                 else
-                    project
 
-            apply rest { res with Project = Some project }
+                    if Path.isRelativePath project then
+                        Some (Path.GetFullPath project)
+                    else
+                        Some project
 
-        | Validate::rest ->
-            apply rest { res with PreviewMetadata = true }
+            apply rest { res with Project = project }
 
-        | Resolve::rest ->
+        | Validate :: rest ->
+            apply rest { res with Validate = true }
+
+        | Resolve :: rest ->
             apply rest { res with Resolve = true }
 
-        | Preview::rest ->
-            apply rest { res with ResolvePreview = true }
+        | Version :: rest ->
+            apply rest { res with DiplayVersion = true }
 
-        | [ ] ->
+        | _ ->
             res
 
     let cwd = Environment.CurrentDirectory
