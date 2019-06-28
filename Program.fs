@@ -772,7 +772,7 @@ let previewResolutionActions
                       (sprintf "yarn add %s@%s --dev" package version)
                 logger.Information("  | -- Resolve manually using '{Command}'", installationCommand)
 
-            // Moving a package from "dependencies" into "devDependencies"
+            // Moving a package from "devDependencies" into "dependencies"
             // by means of un-installing it first from the project
             // then re-installing it into "dependencies"
             | [ ResolveAction.UninstallDev(_); ResolveAction.Install(_, _, version, range) ] ->
@@ -791,7 +791,7 @@ let previewResolutionActions
 
                 logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
 
-            // Moving a package from "devDependencies" into "dependencies"
+            // Moving a package from "dependencies" into "devDependencies"
             // by means of un-installing it first from the project
             // then re-installing it into "dependencies"
             | [ ResolveAction.Uninstall(_); ResolveAction.InstallDev(_, _, version, range) ] ->
@@ -810,9 +810,8 @@ let previewResolutionActions
 
                 logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
 
-            // removing a package from "dependencies"
-            // because the installed version doesn't satisfy required version
-            // and re-installing the same package using a version that does
+            // Modifying a package from "dependencies" into a proper version
+            // that satisfies the requied range
             | [ ResolveAction.Uninstall(_, _, installedVersion); ResolveAction.Install(_, _, version, range) ] ->
                 if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
                 logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
@@ -828,9 +827,8 @@ let previewResolutionActions
 
                 logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
 
-            // removing a package from "devDependencies"
-            // because the installed version doesn't satisfy required version
-            // and re-installing the same package using a version that does
+            // Modifying a package from "devDependencies" into a proper version
+            // that satisfies the requied range
             | [ ResolveAction.UninstallDev(_, _, installedVersion); ResolveAction.InstallDev(_, _, version, range) ] ->
                 if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
                 logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
