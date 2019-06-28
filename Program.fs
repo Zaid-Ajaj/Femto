@@ -763,6 +763,18 @@ let previewResolutionActions
                       (sprintf "yarn add %s@%s" package version)
                 logger.Information("  | -- Resolve manually using '{Command}'", installationCommand)
 
+            | [ ResolveAction.InstallDev(_, _, version, range) ] ->
+                if range.Contains "&&"
+                then logger.Information("  | -- Required version constraint from multiple projects [{Range}]", package, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save-dev" package version)
+                      (sprintf "yarn add %s@%s --dev" package version)
+                logger.Information("  | -- Resolve manually using '{Command}'", installationCommand)
+
+            // Moving a package from "devDependencies" into "dependencies"
+            // by means of un-installing it first from the project
+            // then re-installing it into "dependencies"
             | [ ResolveAction.UninstallDev(_); ResolveAction.Install(_, _, version, range) ] ->
                 logger.Information("  | -- {Package} was installed into \"devDependencies\" instead of \"dependencies\"", package)
                 logger.Information("  | -- Re-install as a production dependency")
@@ -779,6 +791,9 @@ let previewResolutionActions
 
                 logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
 
+            // Moving a package from "dependencies" into "devDependencies"
+            // by means of un-installing it first from the project
+            // then re-installing it into "dependencies"
             | [ ResolveAction.Uninstall(_); ResolveAction.InstallDev(_, _, version, range) ] ->
                 logger.Information("  | -- {Package} was installed into \"dependencies\" instead of \"devDependencies\"", package)
                 logger.Information("  | -- Re-install as a development dependency")
@@ -795,6 +810,8 @@ let previewResolutionActions
 
                 logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
 
+            // Modifying a package from "dependencies" into a proper version
+            // that satisfies the requied range
             | [ ResolveAction.Uninstall(_, _, installedVersion); ResolveAction.Install(_, _, version, range) ] ->
                 if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
                 logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
@@ -802,6 +819,23 @@ let previewResolutionActions
                     nodeCmd
                       (sprintf "npm install %s@%s --save" package version)
                       (sprintf "yarn add %s@%s" package version)
+
+                let uninstallCommand =
+                    nodeCmd
+                        (sprintf "npm uninstall %s" package)
+                        (sprintf "yarn remove %s" package)
+
+                logger.Information("  | -- Resolve manually using '{Uninstall}' then '{Install}'", uninstallCommand, installationCommand)
+
+            // Modifying a package from "devDependencies" into a proper version
+            // that satisfies the requied range
+            | [ ResolveAction.UninstallDev(_, _, installedVersion); ResolveAction.InstallDev(_, _, version, range) ] ->
+                if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
+                logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
+                let installationCommand =
+                    nodeCmd
+                      (sprintf "npm install %s@%s --save-dev" package version)
+                      (sprintf "yarn add %s@%s --dev" package version)
 
                 let uninstallCommand =
                     nodeCmd
@@ -1004,7 +1038,7 @@ let parseArgs (cliArgs : CLIArguments list) =
         | Version :: rest ->
             apply rest { res with DiplayVersion = true }
 
-        | _ ->
+        | [ ] ->
             res
 
     let cwd = Environment.CurrentDirectory
