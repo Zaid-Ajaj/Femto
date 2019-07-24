@@ -1032,10 +1032,10 @@ let parseArgs (cliArgs : CLIArguments list) =
                     |> Option.map Path.normalizeFullPath
                 else
 
-                    if Path.isRelativePath project then
-                        Some (Path.GetFullPath project)
-                    else
+                    if IO.Path.IsPathRooted project then
                         Some project
+                    else
+                        Some (IO.Path.GetFullPath project)
 
             apply rest { res with Project = project }
 
