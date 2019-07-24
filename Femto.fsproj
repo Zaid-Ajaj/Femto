@@ -5,8 +5,8 @@
     <PackAsTool>true</PackAsTool>
     <IsPackable>true</IsPackable>
     <TargetFramework>netcoreapp2.2</TargetFramework>
-    <Version>0.5.0</Version>
-    <PackageVersion>0.5.0</PackageVersion>
+    <Version>0.5.1</Version>
+    <PackageVersion>0.5.1</PackageVersion>
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="Version.fs" />
