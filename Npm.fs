@@ -13,6 +13,8 @@ type NpmDependency = {
     RawVersion : string
     LowestMatching : bool
     DevDependency : bool
+    Versions : string list
+    IsFetchOk : bool
 }
 
 type InstalledNpmPackage = {
@@ -93,6 +95,8 @@ let parseDependencies (project: string) =
                     Constraint = parseConstraint (preprocessVersion (attr "Version" node))
                     LowestMatching = parseResolutionStrategy node
                     DevDependency = parseDevDependency node
+                    Versions = [ ]
+                    IsFetchOk = true
                 })
 
             npmPackages

@@ -18,6 +18,15 @@ type LibraryWithNpmDeps = {
     NpmDependencies : NpmDependency list
 }
 
+[<RequireQualifiedAccess>]
+type NodeManager =
+    | Yarn
+    | Npm
+
+    member this.CommandName =
+        match this with
+        | Yarn -> "yarn"
+        | Npm -> "npm"
 
 [<RequireQualifiedAccess>]
 type ResolveAction =
@@ -50,16 +59,6 @@ let rec findPackageJson (project: string) =
       |> IO.Directory.GetFiles
       |> Seq.tryFind (fun file -> Path.GetFileName file = "package.json")
       |> Option.orElse (findPackageJson parentDir.FullName)
-
-[<RequireQualifiedAccess>]
-type NodeManager =
-    | Yarn
-    | Npm
-
-    member this.CommandName =
-        match this with
-        | Yarn -> "yarn"
-        | Npm -> "npm"
 
 /// Determines which node package maneger to use by checking whether the yarn.lock file is present next to package.json
 let workspaceCommand (packageJson: string) =
@@ -163,66 +162,52 @@ module CreateProcess =
 
         CreateProcess.fromRawCommand program' args'
 
+let private getPackageVersions (nodeManager : NodeManager) (pkg : NpmDependency) =
+    match nodeManager with
+    | NodeManager.Npm ->
+        let res =
+            CreateProcess.xplatCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
+            |> CreateProcess.redirectOutput
+            |> Proc.run
+
+        if res.ExitCode = 0 then
+            let versions = Decode.unsafeFromString (Decode.list Decode.string) res.Result.Output
+            Some versions
+        else
+            None
+
+    | NodeManager.Yarn ->
+        let res =
+            CreateProcess.xplatCommand "yarn" [ "info"; pkg.Name; "versions"; "--json" ]
+            |> CreateProcess.redirectOutput
+            |> CreateProcess.ensureExitCode
+            |> Proc.run
+
+        // Yarn returns ExitCode = 0 even if the packge is not found,
+        // so we need to check using StrErr channel
+        if String.isNullOrEmpty res.Result.Error then
+            let versions = Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
+            Some versions
+        else
+            None
+
 /// Queries the available versions of a package by name and finds the first version that satisfies the version range of the dependency
-let getSatisfyingPackageVersion (nodeManager: NodeManager) (pkg : NpmDependency) =
-    let packageVersions =
-        match nodeManager with
-        | NodeManager.Npm ->
-            let res =
-                CreateProcess.xplatCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
-                |> CreateProcess.redirectOutput
-                |> CreateProcess.ensureExitCode
-                |> Proc.run
-
-            Decode.unsafeFromString (Decode.list Decode.string) res.Result.Output
-
-        | NodeManager.Yarn ->
-            let res =
-                CreateProcess.xplatCommand "yarn" [ "info"; pkg.Name; "versions"; "--json" ]
-                |> CreateProcess.redirectOutput
-                |> CreateProcess.ensureExitCode
-                |> Proc.run
-
-            Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
-
+let getSatisfyingPackageVersion (pkg : NpmDependency) =
     pkg.Constraint
     |> Option.bind (fun range ->
         if pkg.LowestMatching then
-            packageVersions
+            pkg.Versions
             |> Seq.ofList
             |> range.Satisfying
             |> Seq.tryHead
         else
-            packageVersions
+            pkg.Versions
             |> Seq.ofList
             |> range.MaxSatisfying
             |> function
                 | null -> None
                 | version -> Some version
     )
-
-let private printInstallHint (nodeManager : NodeManager) (pkg : NpmDependency) =
-
-    let satisfyingVersion = getSatisfyingPackageVersion nodeManager pkg
-
-    match satisfyingVersion with
-    | Some version ->
-        let hint =
-            match nodeManager with
-            | NodeManager.Npm ->
-                if pkg.DevDependency
-                then sprintf "%s install %s@%s --save-dev" nodeManager.CommandName pkg.Name version
-                else sprintf "%s install %s@%s" nodeManager.CommandName pkg.Name version
-
-            | NodeManager.Yarn ->
-                if pkg.DevDependency
-                then sprintf "%s add %s@%s --dev" nodeManager.CommandName pkg.Name version
-                else sprintf "%s add %s@%s" nodeManager.CommandName pkg.Name version
-
-        logger.Error("  | -- Resolve this issue using '{Hint}'", hint)
-
-    | None ->
-        ()
 
 /// Computes which actions are required for full package resolution of a single library based on the available npm dependency metadata and the currently installed npm packages
 let rec autoResolveActions
@@ -239,7 +224,8 @@ let rec autoResolveActions
             match installed with
             | None ->
                 // not installed -> needs to be installed
-                let requiredVersion = getSatisfyingPackageVersion nodeManager package
+                let requiredVersion = getSatisfyingPackageVersion  package
+
                 match requiredVersion with
                 | None ->
                     let error = "Could not find a version that satisfies the required range"
@@ -281,7 +267,7 @@ let rec autoResolveActions
                         else
                             // installed version falls outside of required range
                             // resolve version from required range
-                            let requiredVersion = getSatisfyingPackageVersion nodeManager package
+                            let requiredVersion = getSatisfyingPackageVersion  package
                             match requiredVersion with
                             | Some resolvedVersion ->
                                 [
@@ -298,7 +284,6 @@ let rec autoResolveActions
                             | None ->
                                 let error = "Could not find a version that satisfies the required range"
                                 [ ResolveAction.UnableToResolve(library.Name, installedPackage.Name, package.RawVersion, error) ]
-
 
                     | None ->
                         let error = "Required range of npm package was not correctly parsable"
@@ -326,67 +311,6 @@ let rec autoResolve
 
     | [ ] ->
         resolveActions
-
-/// Performs dependency analysis of a single Fable project based on it's metadata and the installed npm packages
-let rec analyzePackagesForLibrary
-    (nodeManager : NodeManager)
-    (library : LibraryWithNpmDeps)
-    (packagesToVerify : NpmDependency list)
-    (installedPackages : ResizeArray<InstalledNpmPackage>)
-    (isOk : bool) =
-
-    match packagesToVerify with
-    | pkg::rest ->
-        logger.Information("")
-        let installed = installedPackages |> Seq.tryFind (fun p -> p.Name = pkg.Name)
-        let result =
-            match installed with
-            | None ->
-                logger.Error("{Library} depends on npm package {Package}", library.Name, pkg.Name, pkg.RawVersion)
-                logger.Error("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                logger.Error("  | -- Missing {package} in package.json", pkg.Name)
-                printInstallHint nodeManager pkg
-                false
-
-            | Some installedPackage  ->
-                match installedPackage.Range, installedPackage.Installed with
-                | Some range, Some version ->
-                    logger.Information("{Library} depends on npm package {Package}", library.Name, pkg.Name);
-                    logger.Information("  | -- Required range {Range} found in project file", pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                    logger.Information("  | -- Used range {Range} in package.json", range.ToString())
-                    match pkg.Constraint with
-                    | Some requiredRange when requiredRange.IsSatisfied version ->
-                        logger.Information("  | -- √ Installed version {Version} satisfies required range {Range}", version.ToString(), requiredRange.ToString())
-                        true
-
-                    | _ ->
-                        logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), pkg.Constraint |> Option.map string |> Option.defaultValue pkg.RawVersion)
-                        printInstallHint nodeManager pkg
-                        false
-
-                | _ ->
-                    logger.Error("{Library} requires npm package {Package} version {Version} which was not installed", library.Name, pkg.Name, pkg.Constraint.ToString())
-                    false
-
-        analyzePackagesForLibrary nodeManager library rest installedPackages (isOk && result)
-    | [] ->
-        isOk
-
-/// Performs dependency analysis of multiple Fable projects based on their metadata and the installed npm packages
-let rec analyzePackages
-    (nodeManager : NodeManager)
-    (libraries : LibraryWithNpmDeps list)
-    (installedPackages : ResizeArray<InstalledNpmPackage>)
-    (isOk : bool) =
-
-    match libraries with
-    | library::rest ->
-        let result =
-            analyzePackagesForLibrary nodeManager library library.NpmDependencies installedPackages true
-
-        analyzePackages nodeManager rest installedPackages (isOk && result)
-    | [] ->
-        isOk
 
 type FemtoArgs = {
     /// The project on which the analysis is performed
@@ -653,8 +577,9 @@ let private validateProject (library : LibraryWithNpmDeps) =
         logger.Information("{Library} requires npm package {Package}", library.Name, pkg.Name)
         logger.Information("  | -- Required range {Range}", pkg.RawVersion)
         logger.Information("  | -- Resolution strategy '{Strategy}'", if pkg.LowestMatching then "Min" else "Max")
+
         let isCurrentPkgOk =
-            match getSatisfyingPackageVersion NodeManager.Npm pkg with
+            match getSatisfyingPackageVersion pkg with
             | Some version ->
                 logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
                 true
@@ -859,152 +784,179 @@ let previewResolutionActions
             | _ ->
                 ignore()
 
-let rec private runner (args : FemtoArgs) =
+let private runValidate (libraries : LibraryWithNpmDeps list) =
+    logger.Information("Ensuring project can be analyzed")
+
+    let isValid =
+        (true, libraries)
+        ||> List.fold (fun (state : bool) (library : LibraryWithNpmDeps) ->
+            validateProject library && state
+        )
+
+    if isValid then
+        logger.Information("Validation result: Success")
+        FemtoResult.ValidationSucceeded
+    else
+        logger.Error("Validation result: Failed")
+        FemtoResult.ValidationFailed
+
+let private restoreNodeModules (packageJson : string) (nodeManager : NodeManager) =
+    let packageJsonDir = (IO.Directory.GetParent packageJson).FullName
+
+    logger.Information("Found package.json in {Dir}", packageJsonDir)
+    if needsNodeModules packageJson then
+        logger.Information("Npm packages need to be restored first for project analysis")
+        let restoreCommand = sprintf "%s install" nodeManager.CommandName
+        logger.Information("Restoring npm packages using '{Command}' inside {Dir}", restoreCommand, packageJsonDir)
+        CreateProcess.xplatCommand nodeManager.CommandName [ "install" ]
+        |> CreateProcess.withWorkingDirectory packageJsonDir
+        |> CreateProcess.redirectOutput
+        |> CreateProcess.ensureExitCode
+        |> Proc.run
+        |> ignore
+
+let private runResolution (resolve : bool) (packageJson : string option) (nodeManager : NodeManager) (libraries : LibraryWithNpmDeps list) =
+    match packageJson with
+    | None ->
+        for library in libraries do
+            for pkg in library.NpmDependencies do
+                logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
+
+        logger.Warning "Could not locate package.json file"
+        FemtoResult.MissingPackageJson
+
+    | Some packageJson ->
+
+        restoreNodeModules packageJson nodeManager
+
+        let installedPackages = findInstalledPackages packageJson
+
+        if not resolve then
+            let resolveActions = autoResolve nodeManager libraries installedPackages []
+            let simplifiedActions = resolveConflicts resolveActions
+            previewResolutionActions simplifiedActions (List.ofSeq installedPackages) libraries nodeManager
+            let allResolutionActionsCanExecute =
+                simplifiedActions
+                |> List.exists (function
+                    | ResolveAction.UnableToResolve(_) -> true
+                    | _ -> false)
+                |> not
+
+            if allResolutionActionsCanExecute
+            then FemtoResult.ValidationSucceeded
+            else FemtoResult.ValidationFailed
+
+        else
+            let resolveActions = autoResolve nodeManager libraries installedPackages []
+            if List.isEmpty resolveActions then
+                logger.Information("√ Required packages are already resolved")
+                FemtoResult.ValidationSucceeded
+            else
+                logger.Information("Executing required actions for package resolution")
+                try
+                    let cwd = (IO.Directory.GetParent packageJson).FullName
+                    executeResolutionActions cwd nodeManager resolveActions
+                    logger.Information("√ Package resolution complete")
+                    FemtoResult.ValidationSucceeded
+                with
+                | ex ->
+                    logger.Error(ex.Message)
+                    FemtoResult.UnexpectedError
+
+let private runner (args : FemtoArgs) =
     if args.DiplayVersion then
         printfn "%s" Version.VERSION
         FemtoResult.ValidationSucceeded
     else
-    match args.Project, args.Validate with
-    | None, _ ->
-        logger.Error("Project path was not correctly provided")
-        FemtoResult.ProjectFileNotFound
+        // BEGIN: Mutualized context resolution
+        match args.Project with
+        | None ->
+            logger.Error("Project path was not correctly provided")
+            FemtoResult.ProjectFileNotFound
 
-    | Some project, true ->
-        // only preview dependencies
-        logger.Information("Validating project {Project}", project)
-        logger.Information("Running {Command} against the project", "dotnet restore")
+        | Some project ->
+            logger.Information("Analyzing project {Project}", project)
+            logger.Information("Running {Command} against the project", "dotnet restore")
 
-        let restoreResult =
-            let processOutput =
-                CreateProcess.xplatCommand "dotnet" [ "restore" ]
-                |> CreateProcess.withWorkingDirectory ((IO.Directory.GetParent project).FullName)
-                |> CreateProcess.redirectOutput
-                |> Proc.run
-
-            if processOutput.ExitCode <> 0
-            then Error processOutput.Result.Output
-            else Ok ()
-
-        match restoreResult with
-        | Error error ->
-            logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
-            FemtoResult.ValidationFailed
-
-        | Ok () ->
-
-            logger.Information("Ensuring project can be analyzed")
-            let crackResult =
-                try
-                    let projectInfo = ProjectCracker.fullCrack project
-                    Ok projectInfo
-                with
-                | ex -> Error ex.Message
-
-            match crackResult with
-            | Error er ->
-                logger.Error("Error while analyzing the project's structure and dependencies")
-                FemtoResult.ValidationFailed
-            | Ok crackedProject ->
-                let libraries = findLibraryWithNpmDeps crackedProject
-
-                let isValid =
-                    (true, libraries)
-                    ||> List.fold (fun (state : bool) (library : LibraryWithNpmDeps) ->
-                        validateProject library && state
-                    )
-
-                if isValid then
-                    logger.Information("Validation result: Success")
-                    FemtoResult.ValidationSucceeded
-                else
-                    logger.Error("Validation result: Failed")
-                    FemtoResult.ValidationFailed
-
-    | Some project, false ->
-        logger.Information("Analyzing project {Project}", project)
-        let projectInfo =
-            try Ok (ProjectCracker.fullCrack project)
-            with | ex ->
-                Error ex.Message
-
-        match projectInfo with
-        | Error errorMessage ->
-            logger.Error("Error while analyzing project structure and dependencies")
-            FemtoResult.ProjectCrackerFailed
-        | Ok projectInfo ->
-
-            let libraries = findLibraryWithNpmDeps projectInfo
-
-
-            match findPackageJson project with
-            | None ->
-                for library in libraries do
-                    for pkg in library.NpmDependencies do
-                        logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
-
-                logger.Warning "Could not locate package.json file"
-                FemtoResult.MissingPackageJson
-
-            | Some packageJson ->
-                let packageJsonDir = (IO.Directory.GetParent packageJson).FullName
-                let nodeManager = workspaceCommand packageJson
-                logger.Information("Found package.json in {Dir}", packageJsonDir)
-                if needsNodeModules packageJson then
-                    logger.Information("Npm packages need to be restored first for project analysis")
-                    let restoreCommand = sprintf "%s install" nodeManager.CommandName
-                    logger.Information("Restoring npm packages using '{Command}' inside {Dir}", restoreCommand, packageJsonDir)
-                    CreateProcess.xplatCommand nodeManager.CommandName [ "install" ]
-                    |> CreateProcess.withWorkingDirectory packageJsonDir
+            let restoreResult =
+                let processOutput =
+                    CreateProcess.xplatCommand "dotnet" [ "restore" ]
+                    |> CreateProcess.withWorkingDirectory ((IO.Directory.GetParent project).FullName)
                     |> CreateProcess.redirectOutput
-                    |> CreateProcess.ensureExitCode
                     |> Proc.run
-                    |> ignore
 
-                    runner args
+                if processOutput.ExitCode <> 0
+                then Error processOutput.Result.Output
+                else Ok ()
 
-                else
+            match restoreResult with
+            | Error error ->
+                logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
+                FemtoResult.ValidationFailed
 
-                    let installedPackages = findInstalledPackages packageJson
+            | Ok () ->
+                let crackResult =
+                    try
+                        let projectInfo = ProjectCracker.fullCrack project
+                        Ok projectInfo
+                    with
+                    | ex -> Error ex.Message
+
+                match crackResult with
+                | Error er ->
+                    logger.Error("Error while analyzing the project's structure and dependencies")
+                    FemtoResult.ProjectCrackerFailed
+
+                | Ok crackedProject ->
+                    let packageJson = findPackageJson project
+
+                    let nodeManager =
+                        packageJson
+                        |> Option.map workspaceCommand
+                        // TODO: Try detect if yarn is available
+                        // If yes, use yarn as resolution of version is 2 times faster
+                        |> Option.defaultValue NodeManager.Npm
+
                     logger.Information("Using {Manager} for package management", nodeManager.CommandName)
-                    if not args.Resolve then
-                        let resolveActions = autoResolve nodeManager libraries installedPackages []
-                        let simplifiedActions = resolveConflicts resolveActions
-                        previewResolutionActions simplifiedActions (List.ofSeq installedPackages) libraries nodeManager
-                        let allResolutionActionsCanExecute =
-                            simplifiedActions
-                            |> List.exists (function
-                                | ResolveAction.UnableToResolve(_) -> true
-                                | _ -> false)
-                            |> not
 
-                        if allResolutionActionsCanExecute
-                        then FemtoResult.ValidationSucceeded
-                        else FemtoResult.ValidationFailed
+                    let libraries =
+                        findLibraryWithNpmDeps crackedProject
+                        |> List.map (fun library ->
+                            let npmDependencies =
+                                library.NpmDependencies
+                                |> List.map (fun pkg ->
+                                    match getPackageVersions nodeManager pkg with
+                                    | Some versions ->
+                                        { pkg with Versions = versions }
+                                    | None ->
+                                        { pkg with IsFetchOk = false }
+                                )
 
-                    elif args.Resolve then
-                        let resolveActions = autoResolve nodeManager libraries installedPackages []
-                        if List.isEmpty resolveActions then
-                            logger.Information("√ Required packages are already resolved")
-                            FemtoResult.ValidationSucceeded
+                            { library with NpmDependencies = npmDependencies}
+                        )
+
+                    let hasInvalidNpmDepencies =
+                        libraries
+                        |> List.filter (fun library ->
+                            library.NpmDependencies
+                            |> List.exists (fun pkg ->
+                                if pkg.IsFetchOk then
+                                    false
+                                else
+                                    logger.Error("Failed to retrieve information about {Package} required by {Library}", pkg.Name, library.Name)
+                                    true
+                            )
+                        )
+
+                    // If we can't fetch the info a package, we stop here
+                    if List.isEmpty hasInvalidNpmDepencies then
+                        // END: Mutualized context resolution
+                        if args.Validate then
+                            runValidate libraries
                         else
-                            logger.Information("Executing required actions for package resolution")
-                            try
-                                let cwd = (IO.Directory.GetParent packageJson).FullName
-                                executeResolutionActions cwd nodeManager resolveActions
-                                logger.Information("√ Package resolution complete")
-                                FemtoResult.ValidationSucceeded
-                            with
-                            | ex ->
-                                logger.Error(ex.Message)
-                                FemtoResult.UnexpectedError
-                    else
-                    if analyzePackages nodeManager libraries installedPackages true then
-                        logger.Information("")
-                        logger.Information("√ Project analysis complete")
-                        FemtoResult.ValidationSucceeded
+                            runResolution args.Resolve packageJson  nodeManager libraries
                     else
                         FemtoResult.ValidationFailed
-
 
 type CLIArguments =
     | [<MainCommand>] Project of path : string
