@@ -1070,19 +1070,14 @@ let main argv =
         |> printfn "%s" // We don't use the logger in order to avoid the [time type] prefix in the console
 
     let result =
-        try
-            let args = parser.Parse(argv)
+        let args = parser.Parse(argv, raiseOnUsage = false)
 
-            if args.IsUsageRequested then
-                printUsage()
-                FemtoResult.UsageRequested
-            else
-                args.GetAllResults()
-                |> parseArgs
-                |> runner
-        with
-            | _ ->
-                printUsage()
-                FemtoResult.InvalidArguments
+        if args.IsUsageRequested then
+            printUsage()
+            FemtoResult.UsageRequested
+        else
+            args.GetAllResults()
+            |> parseArgs
+            |> runner
 
     int result
