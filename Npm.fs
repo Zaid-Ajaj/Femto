@@ -74,6 +74,8 @@ let private parseDevDependency (node : XmlNode) =
 let preprocessVersion (input: string)  =
     input
       .ToLower()
+      .Replace("&gt;", ">")
+      .Replace("&lt;", "<")
       .Replace("gte", ">=")
       .Replace("gt", ">")
       .Replace("lt", "<")
