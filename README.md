@@ -97,6 +97,11 @@ Sometimes you want to restrict the version using a specific range such as `>= 1.
 
 This way you can specify your version range as `gte 1.0 lt 2` or you can mix-and-match the notations `>= 1.0 lt 2`
 
+### Visual Studio Users
+
+If you happen to use Visual Studio to build your library, it will escape symbols like `>=` or `>` from the project and turn them into `&gt;=` or `&gt;`. Don't worry about this because Femto can still understand the underlying symbols. To make sure everything still works, run `femto --validate` (see below) against your project and you should see the same results.
+
+
 ### Validate your dependencies
 If you are a library author and wondering whether Femto will pick uo the dependencies you specified in your project file, then simply run:
 ```
