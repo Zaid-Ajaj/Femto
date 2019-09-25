@@ -1,6 +1,7 @@
 open Femto
 open Femto.ProjectCracker
 open System
+open System.Net.Http
 open Serilog
 open Npm
 open Newtonsoft.Json.Linq
@@ -50,15 +51,17 @@ let findLibraryWithNpmDeps (project: CrackedFsproj) =
     )
     |> List.filter (fun projet -> not (List.isEmpty projet.NpmDependencies))
 
-/// Determines the full path of the package.json file by recursively checking every directory and it's parent starting from the path of the project file
-let rec findPackageJson (project: string) =
+let rec findFile (fileName: string) (project: string) =
     let parentDir = IO.Directory.GetParent project
     if isNull parentDir then None
     else
       parentDir.FullName
       |> IO.Directory.GetFiles
-      |> Seq.tryFind (fun file -> Path.GetFileName file = "package.json")
-      |> Option.orElse (findPackageJson parentDir.FullName)
+      |> Seq.tryFind (fun file -> Path.GetFileName file = fileName)
+      |> Option.orElse (findFile fileName parentDir.FullName)
+
+/// Determines the full path of the package.json file by recursively checking every directory and it's parent starting from the path of the project file
+let rec findPackageJson = findFile "package.json"
 
 /// Determines which node package maneger to use by checking whether the yarn.lock file is present next to package.json
 let workspaceCommand (packageJson: string) =
@@ -182,10 +185,9 @@ let private getPackageVersions (nodeManager : NodeManager) (pkg : NpmDependency)
             |> CreateProcess.redirectOutput
             |> CreateProcess.ensureExitCode
             |> Proc.run
-
         // Yarn returns ExitCode = 0 even if the packge is not found,
         // so we need to check using StrErr channel
-        if String.isNullOrEmpty res.Result.Error then
+        if String.isNullOrEmpty res.Result.Error || res.Result.Error.Contains "ExperimentalWarning" then
             let versions = Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
             Some versions
         else
@@ -312,6 +314,11 @@ let rec autoResolve
     | [ ] ->
         resolveActions
 
+type InstallArgs = {
+    Package: string
+    Version: string option
+}
+
 type FemtoArgs = {
     /// The project on which the analysis is performed
     Project: string option
@@ -321,6 +328,8 @@ type FemtoArgs = {
     Resolve : bool
     /// When set to true, displays the version of Femto
     DiplayVersion : bool
+    /// The nuget package to install
+    Install : InstallArgs option
 }
 
 let defaultCliArgs = {
@@ -328,6 +337,7 @@ let defaultCliArgs = {
     Validate = false
     Resolve = false
     DiplayVersion = false
+    Install = None
 }
 
 let resolveConflicts (actions: ResolveAction list) =
@@ -863,7 +873,309 @@ let private runResolution (resolve : bool) (packageJson : string option) (nodeMa
                     logger.Error(ex.Message)
                     FemtoResult.UnexpectedError
 
-let private runner (args : FemtoArgs) =
+/// Returns wether paket is installed as a global dotnet tool
+let isPaketInstalledGlobally() =
+    [ "tool"; "list"; "--global" ]
+    |> CreateProcess.xplatCommand "dotnet"
+    |> CreateProcess.redirectOutput
+    |> Proc.run
+    |> fun result ->
+        if result.ExitCode <> 0 then
+            false
+        else
+            result.Result.Output
+            |> String.split '\n'
+            |> Seq.exists (fun line -> line.StartsWith "paket")
+
+/// Returns wether paket is installed a local dotnet CLI tool
+/// This function checks whether the entry "paket" exists in { "tools": [tool entries] }
+/// The contents of the JSON is taken from .config/dotnet-tools.json which is the tool manifest
+/// for local CLI tools in .NET Core 3 onwards
+let isPaketInstalledAsLocalCliTool (paketDependenciesWorkingDir: string) =
+    try
+        let toolsConfigPath = IO.Path.Combine(paketDependenciesWorkingDir, ".config", "dotnet-tools.json")
+        if IO.File.Exists toolsConfigPath then
+            let toolsContent = IO.File.ReadAllText toolsConfigPath
+            let toolsConfig = JObject.Parse(toolsContent)
+            match toolsConfig.TryGetValue "tools" with
+            | true, value ->
+                let tools = unbox<JObject> value
+                match tools.TryGetValue "paket" with
+                | true, _ -> true
+                | _ -> false
+            | _ -> false
+        else
+            false
+    with
+    | ex -> false
+
+let installLocalCliTool name workingDir =
+    CreateProcess.xplatCommand "dotnet" [ "tool"; "install"; name ]
+    |> CreateProcess.withWorkingDirectory workingDir
+    |> CreateProcess.redirectOutput
+    |> Proc.run
+    |> ignore
+
+/// Creates a .config/dotnet-tools.json file if it does not exist
+/// This is a tool manifest file which allows us to install paket a local cli tool (starting from .NET Core 3)
+/// TODO: Discuss whether it is a good idea to install paket automatically
+let installPaketAsLocalCliToll projectRoot =
+    let directory = IO.Path.Combine(projectRoot, ".config")
+    let configFilePath = IO.Path.Combine(projectRoot, ".config", "dotnet-tools.json")
+    if not (IO.Directory.Exists directory) then
+        IO.Directory.CreateDirectory directory |> ignore
+        let content = "{ \"version\":1, \"isRoot\":true, \"tools\": { } }"
+        IO.File.WriteAllText(configFilePath, content)
+        installLocalCliTool "paket" projectRoot
+    else
+        if IO.File.Exists configFilePath then
+            installLocalCliTool "paket" projectRoot
+        else
+            let content = "{ \"version\":1, \"isRoot\":true, \"tools\": { } }"
+            IO.File.WriteAllText(configFilePath, content)
+            installLocalCliTool "paket" projectRoot
+
+let installPaketFromBootstrapper projectRoot =
+    let installation = async {
+        try
+            use httpClient = new HttpClient()
+            let! paketSearchResult = Async.AwaitTask (httpClient.GetStringAsync("https://azuresearch-usnc.nuget.org/query?q=Paket&prerelease=false"))
+            let parsedSearch = JObject.Parse(paketSearchResult)
+            let packages = unbox<JArray> parsedSearch.["data"]
+            let latestPaketVersion =
+                packages
+                |> Seq.tryFind (fun pkg -> pkg.["id"].ToObject<string>() = "Paket")
+                |> Option.map (fun pkg -> pkg.["version"].ToObject<string>())
+
+            match latestPaketVersion with
+            | None ->
+                return false
+            | Some version ->
+                let downloadUrl = sprintf "https://github.com/fsprojects/Paket/releases/download/%s/paket.bootstrapper.exe" version
+                logger.Information("Found {Manager} version {Version}", "paket", version)
+                logger.Information("Downloading bootstrapper from {Link}", downloadUrl)
+                let! bootstrapperContents = Async.AwaitTask (httpClient.GetByteArrayAsync(downloadUrl))
+                if not (IO.Directory.Exists (IO.Path.Combine(projectRoot, ".paket"))) then
+                    IO.Path.Combine(projectRoot, ".paket")
+                    |> IO.Directory.CreateDirectory
+                    |> ignore
+
+                if IO.File.Exists (IO.Path.Combine(projectRoot, ".paket", "paket.exe")) then
+                    IO.File.Delete (IO.Path.Combine(projectRoot, ".paket", "paket.exe"))
+
+                IO.File.WriteAllBytes(IO.Path.Combine(projectRoot, ".paket", "paket.exe"), bootstrapperContents)
+                return true
+        with
+        | error ->
+            return false
+    }
+
+    Async.RunSynchronously installation
+
+let rec private installPackage (project: string) (installArgs: InstallArgs) (originalArgs: FemtoArgs) =
+    let projectDir = IO.Directory.GetParent(project)
+    let projectWorkingDir = projectDir.FullName
+    let filesNextToProject = IO.Directory.GetFiles projectWorkingDir
+    let paketReferences =
+        filesNextToProject
+        |> Seq.tryFind (fun file -> file.EndsWith "paket.references")
+        |> Option.map IO.File.ReadAllLines
+
+    match paketReferences with
+    | None ->
+        match installArgs with
+        | { Package = package; Version = None } ->
+            logger.Information("Using {Manager} to install {Package}", "nuget", installArgs.Package)
+
+        | { Package = package; Version = Some version } ->
+            logger.Information("Using {Manager} to install {Package} version {Version}", "nuget", installArgs.Package, version)
+
+        let installArguments = [
+            yield "add"
+            yield "package"
+            yield installArgs.Package
+            match installArgs.Version with
+            | Some version ->
+                yield "--version"
+                yield version
+            | None ->
+                ()
+        ]
+
+        let installationResult =
+            CreateProcess.xplatCommand "dotnet" installArguments
+            |> CreateProcess.withWorkingDirectory projectWorkingDir
+            |> CreateProcess.redirectOutput
+            |> Proc.run
+
+        if installationResult.ExitCode <> 0 then
+            logger.Error("Could not install {Package}", installArgs.Package)
+            let errorCommand = sprintf "%s> %s %s" projectWorkingDir "dotnet" (String.concat " " installArguments)
+            logger.Error(errorCommand)
+            logger.Error("Process Ouput:")
+            logger.Error(installationResult.Result.Output)
+            FemtoResult.NugetInstallationFailed
+        else
+            logger.Information("√ Nuget package {Feliz} installed successfully", installArgs.Package)
+            logger.Information("Resolving potentially required npm package with {command}", "femto --resolve")
+            runner { originalArgs with Install = None; Resolve = true }
+
+    | Some references ->
+        logger.Information("Detected {References} file -> use {Manager}", "paket.references", "paket")
+
+        let group =
+            references
+            |> Seq.tryFind (fun line -> line.ToLower().StartsWith "group")
+            |> Option.map (fun line -> line.Replace("group", "").Trim())
+            |> Option.defaultValue "Main"
+
+        match installArgs with
+        | { Package = package; Version = None } ->
+            logger.Information("Installing {Package} within dependency group {Group}",  installArgs.Package, group)
+
+        | { Package = package; Version = Some version } ->
+            logger.Information("Installing {Package} version {Version} within dependency group {Group}",  installArgs.Package, version, group)
+
+        match findFile "paket.dependencies" project with
+        | None ->
+            FemtoResult.PaketInstallationFailedNoPaketDependencies
+        | Some paketDependencies ->
+            let paketInstallArgs =  [
+                yield "add"
+                yield installArgs.Package
+                yield "--project"
+                yield project
+                yield "--group"
+                yield group
+
+                match installArgs.Version with
+                | Some version ->
+                    yield "--version"
+                    yield version
+                | None ->
+                    ()
+            ]
+
+            let paketDependenciesParent = IO.Directory.GetParent paketDependencies
+            let projectRoot = paketDependenciesParent.FullName
+            // check if {projectRoot}/.paket/paket.exe and run it from Windows
+            if IO.File.Exists (IO.Path.Combine(projectRoot, ".paket", "paket.exe")) && Environment.isWindows then
+                logger.Information("Using locally installed {Manager} within {Path}", "paket", ".paket/paket.exe")
+                paketInstallArgs
+                |> CreateProcess.fromRawCommand (IO.Path.Combine(projectRoot, ".paket", "paket.exe"))
+                |> CreateProcess.withWorkingDirectory projectRoot
+                |> CreateProcess.redirectOutput
+                |> Proc.run
+                |> fun installProcess ->
+                    if installProcess.ExitCode = 0
+                    then
+                        logger.Information("√ Nuget package {Package} installed successfully", installArgs.Package)
+                        logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
+                        runner { originalArgs with Install = None; Resolve = true }
+                    else
+                        let erroredShellCommand =
+                            sprintf "%s> %s %s"
+                              // workding directory
+                              projectRoot
+                              // program
+                              (IO.Path.Combine(projectRoot, ".paket", "paket.exe"))
+                              // args
+                              (String.concat " " paketInstallArgs)
+                        logger.Error("Error while running the following command:")
+                        logger.Error(erroredShellCommand)
+                        logger.Error("Process Output: {Output}", installProcess.Result.Output)
+                        logger.Error("Process Error: {Error}", installProcess.Result.Error)
+                        FemtoResult.PaketFailed
+            elif IO.File.Exists (IO.Path.Combine(projectRoot, ".paket", "paket.exe")) && not Environment.isWindows then
+                // TODO: Check if mono exists first
+                // Check if {projectRoot}/.paket/paket.exe exists and run it from non-Windows machines using mono
+                logger.Information("Using locally installed {Manager} within {Path}", "paket", ".paket/paket.exe")
+                List.append [ IO.Path.Combine(projectRoot, ".paket", "paket.exe") ] paketInstallArgs
+                |> CreateProcess.xplatCommand "mono"
+                |> CreateProcess.withWorkingDirectory projectRoot
+                |> CreateProcess.redirectOutput
+                |> Proc.run
+                |> fun installProcess ->
+                    if installProcess.ExitCode = 0
+                    then
+                        logger.Information("√ Nuget package {Package} installed successfully", installArgs.Package)
+                        logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
+                        runner { originalArgs with Install = None; Resolve = true }
+                    else
+                        let erroredShellCommand =
+                            sprintf "%s> %s %s"
+                              // workding directory
+                              projectWorkingDir
+                              // program
+                              "mono"
+                              // args
+                              (String.concat " " ( List.append [ IO.Path.Combine(projectRoot, ".paket", "paket.exe") ] paketInstallArgs))
+                        logger.Error("Error while running the following command:")
+                        logger.Error(erroredShellCommand)
+                        logger.Error("Process Output: {Output}", installProcess.Result.Output)
+                        logger.Error("Process Error: {Error}", installProcess.Result.Error)
+                        FemtoResult.PaketFailed
+            elif isPaketInstalledAsLocalCliTool projectRoot then
+                logger.Information("Using locally installed {Manager}", "paket")
+                paketInstallArgs
+                |> CreateProcess.xplatCommand "dotnet paket"
+                |> CreateProcess.withWorkingDirectory projectRoot
+                |> CreateProcess.redirectOutput
+                |> Proc.run
+                |> fun installProcess ->
+                    if installProcess.ExitCode = 0
+                    then
+                        logger.Information("√ Nuget package {Package} installed successfully", installArgs.Package)
+                        logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
+                        runner { originalArgs with Install = None; Resolve = true }
+                    else
+                        let erroredShellCommand =
+                            sprintf "%s> %s %s"
+                              // workding directory
+                              projectWorkingDir
+                              // program
+                              "dotnet paket"
+                              // args
+                              (String.concat " " paketInstallArgs)
+                        logger.Error("Error while running the following command:")
+                        logger.Error(erroredShellCommand)
+                        logger.Error("Process Output: {Output}", installProcess.Result.Output)
+                        logger.Error("Process Error: {Error}", installProcess.Result.Error)
+                        FemtoResult.PaketFailed
+            elif isPaketInstalledGlobally() then
+                logger.Information("Using globally installed {Manager}", "paket")
+                paketInstallArgs
+                |> CreateProcess.xplatCommand "paket"
+                |> CreateProcess.withWorkingDirectory projectRoot
+                |> CreateProcess.redirectOutput
+                |> Proc.run
+                |> fun installProcess ->
+                    if installProcess.ExitCode = 0
+                    then
+                        logger.Information("√ Package {Package} installed successfully", installArgs.Package)
+                        logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
+                        runner { originalArgs with Install = None; Resolve = true }
+                    else
+                        let erroredShellCommand =
+                            sprintf "%s> %s %s"
+                              // workding directory
+                              projectWorkingDir
+                              // program
+                              "paket"
+                              // args
+                              (String.concat " " paketInstallArgs)
+                        logger.Error("Error while running the following command:")
+                        logger.Error(erroredShellCommand)
+                        logger.Error("Process Output: {Output}", installProcess.Result.Output)
+                        logger.Error("Process Error: {Error}", installProcess.Result.Error)
+                        FemtoResult.PaketFailed
+            else
+                if installPaketFromBootstrapper projectRoot then
+                    runner { originalArgs with Install = None; Resolve = true }
+                else
+                    FemtoResult.PaketNotFound
+
+and private runner (args : FemtoArgs) =
     if args.DiplayVersion then
         printfn "%s" Version.VERSION
         FemtoResult.ValidationSucceeded
@@ -891,10 +1203,29 @@ let private runner (args : FemtoArgs) =
 
             match restoreResult with
             | Error error ->
-                logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
-                FemtoResult.ValidationFailed
+                if error.Contains "\"paket.exe\"' is not recognized as an internal or external command" then
+                    match findFile "paket.dependencies" project with
+                    | None ->
+                        logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
+                        FemtoResult.ValidationFailed
+                    | Some paketDeps ->
+                        logger.Information("Looks like {Command} is failing due to missing paket installation", "dotnet restore")
+                        logger.Information("Installing paket locally...")
+                        let paketDepsParent = IO.Directory.GetParent paketDeps
+                        if installPaketFromBootstrapper paketDepsParent.FullName then
+                            logger.Information("√ Paket was installed successfully, restarting...")
+                            runner args
+                        else
+                            logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
+                            FemtoResult.ValidationFailed
+                else
+                    logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
+                    FemtoResult.ValidationFailed
 
             | Ok () ->
+                match args.Install with
+                | Some installArgs -> installPackage project installArgs args
+                | None ->
                 let crackResult =
                     try
                         let projectInfo = ProjectCracker.fullCrack project
@@ -962,7 +1293,8 @@ type CLIArguments =
     | [<MainCommand>] Project of path : string
     | Validate
     | Resolve
-    | Version
+    | Version of string option
+    | [<CliPrefix(CliPrefix.None)>] Install of package:string
 
     interface IArgParserTemplate with
 
@@ -971,7 +1303,8 @@ type CLIArguments =
             | Project _ -> "specify the path to the F# project."
             | Validate -> "check that the XML tags used in the F# project file are parsable and a npm package version can be calculated."
             | Resolve -> "resolve and install required packages."
-            | Version -> "display the current version of Femto."
+            | Version _ -> "display the current version of Femto."
+            | Install _ -> "install a package into a project"
 
 let parseArgs (cliArgs : CLIArguments list) =
     let rec apply (cliArgs : CLIArguments list) (res : FemtoArgs) =
@@ -997,8 +1330,24 @@ let parseArgs (cliArgs : CLIArguments list) =
         | Resolve :: rest ->
             apply rest { res with Resolve = true }
 
-        | Version :: rest ->
+        | Version None :: rest ->
             apply rest { res with DiplayVersion = true }
+
+        | Version (Some version) :: rest ->
+            let installArgs =
+                match res.Install with
+                | Some args -> Some { args with Version = Some version }
+                | None -> None
+
+            apply rest { res with  Install = installArgs }
+
+        | Install package :: rest ->
+            let installArgs =
+                match res.Install with
+                | Some args -> { args with Package = package }
+                | None -> { Package = package; Version = None }
+
+            apply rest { res with Install = Some installArgs }
 
         | [ ] ->
             res
