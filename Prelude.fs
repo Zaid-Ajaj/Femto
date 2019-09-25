@@ -10,6 +10,12 @@ type FemtoResult =
     | ProjectCrackerFailed = 5
     | UsageRequested = 6
     | InvalidArguments = 7
+    | NugetInstallationFailed = 8
+    | NugetInstallationSucceeded = 9
+    | PaketInstallationFailedNoPaketDependencies = 10
+    | PaketInstallationSucceeded = 11
+    | PaketNotFound = 12
+    | PaketFailed = 13
 
 type ResizeArrayDictionary<'K, 'V when 'K : equality>() =
     let dic = System.Collections.Generic.Dictionary<'K, ResizeArray<'V>>()
