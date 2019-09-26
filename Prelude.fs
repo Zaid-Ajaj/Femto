@@ -16,6 +16,7 @@ type FemtoResult =
     | PaketInstallationSucceeded = 11
     | PaketNotFound = 12
     | PaketFailed = 13
+    | PackageUninstalled = 14
 
 type ResizeArrayDictionary<'K, 'V when 'K : equality>() =
     let dic = System.Collections.Generic.Dictionary<'K, ResizeArray<'V>>()

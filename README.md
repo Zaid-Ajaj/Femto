@@ -58,6 +58,12 @@ femto install <package>
 ```
 First, Femto detects whether it needs to use paket by checking the existence of a `paket.references` file, if that is the case then Femto also detects in which dependency group the package has to be installed and eventually calls the installed paket instance to install the package. Afterwards, Femto calls `--resolve` to install potentially required npm packages. When there is no `paket.references` file, then Femto simply calls `dotnet add package <package>` and then `femto --resolve` in the project directory.
 
+> When Femto cannot find paket installed as a global dotnet tool nor as a local installation from the paket bootstrapper under `.paket/paket.exe`, then Femto will install it locally following these [Paket gettings started guidelines](https://fsprojects.github.io/Paket/getting-started.html) and restarts the installation process.
+
+### Uninstalling Packages with `femto uninstall <package>`
+
+Same as when installing a package, Femto will instruct either nuget or paket to uninstall the package except this command does not remove unused packages from npm in package.json because Femto cannot know whether the package is being used multiple projects.
+
 ### Library Authors
 
 In order for Femto to pick up the npm packages that your library depends upon, you must add a section in the project file of your library:
