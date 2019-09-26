@@ -51,6 +51,13 @@ This command checks for missing packages and packages of which the installed ver
  - If a package version doesn't satisfy requirements, then a proper version is resolved and the package is replaced with the new resolved version by uninstalling the current one and installing the correct package.
  - If a package version doesn't satisfy requirements *and* a version cannot be resolved that satisfies requirements, then a resolution error is logged.
 
+### Installing Packages with `femto install <package>`
+Femto can install a package for a project whether it is using paket or not then automatically resolves the required npm packages afterwards. Simply navigate to a project where there is a fsharp/Fable project and call
+```
+femto install <package>
+```
+First, Femto detects whether it needs to use paket by checking the existence of a `paket.references` file, if that is the case then Femto also detects in which dependency group the package has to be installed and eventually calls the installed paket instance to install the package. Afterwards, Femto calls `--resolve` to install potentially required npm packages. When there is no `paket.references` file, then Femto simply calls `dotnet add package <package>` and then `femto --resolve` in the project directory.
+
 ### Library Authors
 
 In order for Femto to pick up the npm packages that your library depends upon, you must add a section in the project file of your library:
