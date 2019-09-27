@@ -331,11 +331,12 @@ type FemtoArgs = {
     /// When set to true, validates the metadata of the npm dependencies of a Fable library
     Validate: bool
     /// When set to true, performs the required actions for full package resolution
-    Resolve : bool
+    Resolve: bool
     /// When set to true, displays the version of Femto
-    DiplayVersion : bool
+    DiplayVersion: bool
+    LogInitialProjectAnalysis: bool
     /// The nuget package to install
-    PackageArgs : PackageArgs
+    PackageArgs: PackageArgs
 }
 
 let defaultCliArgs = {
@@ -344,6 +345,7 @@ let defaultCliArgs = {
     Resolve = false
     DiplayVersion = false
     PackageArgs = PackageArgs.DoNothing
+    LogInitialProjectAnalysis = true
 }
 
 let resolveConflicts (actions: ResolveAction list) =
@@ -920,7 +922,11 @@ let installLocalCliTool name workingDir =
     |> CreateProcess.withWorkingDirectory workingDir
     |> CreateProcess.redirectOutput
     |> Proc.run
-    |> ignore
+    |> fun processInfo ->
+        if processInfo.ExitCode <> 0 then
+            Error processInfo.Result.Output
+        else
+            Ok()
 
 /// Creates a .config/dotnet-tools.json file if it does not exist
 /// This is a tool manifest file which allows us to install paket a local cli tool (starting from .NET Core 3)
@@ -978,6 +984,19 @@ let installPaketFromBootstrapper projectRoot =
 
     Async.RunSynchronously installation
 
+let isDotnetSdkThree() =
+    CreateProcess.xplatCommand "dotnet" [ "--version" ]
+    |> CreateProcess.redirectOutput
+    |> Proc.run
+    |> fun processInfo ->
+        if processInfo.ExitCode <> 0 then
+            false
+        else
+            try
+              let dotnetVersion = Version.Parse(processInfo.Result.Output)
+              dotnetVersion >= Version.Parse("3.0.100")
+            with
+            | _ -> false
 
 let rec private installPackage (project: string) (installArgs: InstallArgs) (originalArgs: FemtoArgs) =
     let projectDir = IO.Directory.GetParent(project)
@@ -1360,13 +1379,15 @@ and private runner (args : FemtoArgs) =
             FemtoResult.ProjectFileNotFound
 
         | Some project ->
-            logger.Information("Analyzing project {Project}", project)
-            logger.Information("Running {Command} against the project", "dotnet restore")
+            let projectWorkingDir = (IO.Directory.GetParent project).FullName
+            if args.LogInitialProjectAnalysis then
+              logger.Information("Analyzing project {Project}", project)
+              logger.Information("Running {Command} against the project", "dotnet restore")
 
             let restoreResult =
                 let processOutput =
                     CreateProcess.xplatCommand "dotnet" [ "restore" ]
-                    |> CreateProcess.withWorkingDirectory ((IO.Directory.GetParent project).FullName)
+                    |> CreateProcess.withWorkingDirectory projectWorkingDir
                     |> CreateProcess.redirectOutput
                     |> Proc.run
 
@@ -1382,15 +1403,49 @@ and private runner (args : FemtoArgs) =
                         logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
                         FemtoResult.ValidationFailed
                     | Some paketDeps ->
-                        logger.Information("Looks like {Command} is failing due to missing paket installation", "dotnet restore")
-                        logger.Information("Installing paket locally...")
                         let paketDepsParent = IO.Directory.GetParent paketDeps
-                        if installPaketFromBootstrapper paketDepsParent.FullName then
-                            logger.Information("√ Paket was installed successfully, restarting...")
-                            runner args
+                        if not (isPaketInstalledAsLocalCliTool paketDepsParent.FullName)
+                            then logger.Information("Installing paket locally...")
+                        if isDotnetSdkThree() then
+                            match installPaketAsLocalCliToll paketDepsParent.FullName with
+                            | Error paketInstallError ->
+                                logger.Error("Could not install paket locally as a dotnet cli tool")
+                                logger.Error(paketInstallError)
+                                FemtoResult.PaketNotFound
+                            | Ok() ->
+                                // do initial restore from Paket
+                                // first restore solution to update the restore targets
+                                let paketRestoreResult =
+                                    CreateProcess.xplatCommand "dotnet" [ "paket"; "restore" ]
+                                    |> CreateProcess.withWorkingDirectory paketDepsParent.FullName
+                                    |> CreateProcess.redirectOutput
+                                    |> Proc.run
+                                    |> fun processInfo ->
+                                        if processInfo.ExitCode <> 0
+                                        then Error processInfo.Result.Output
+                                        else
+                                        CreateProcess.xplatCommand "dotnet" [ "paket"; "restore"; "--project"; project ]
+                                        |> CreateProcess.withWorkingDirectory paketDepsParent.FullName
+                                        |> CreateProcess.redirectOutput
+                                        |> Proc.run
+                                        |> fun processInfo ->
+                                            if processInfo.ExitCode <> 0
+                                            then Error processInfo.Result.Output
+                                            else Ok()
+
+                                match paketRestoreResult with
+                                | Error error ->
+                                    logger.Error("{Command} failed with error {Error}", "dotnet paket restore", error)
+                                    FemtoResult.PaketFailed
+                                | Ok() ->
+                                    runner { args with LogInitialProjectAnalysis = false }
                         else
-                            logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
-                            FemtoResult.ValidationFailed
+                            if installPaketFromBootstrapper paketDepsParent.FullName then
+                                logger.Information("√ Paket was installed successfully, restarting...")
+                                runner { args with LogInitialProjectAnalysis = false }
+                            else
+                                logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
+                                FemtoResult.ValidationFailed
                 else
                     logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
                     FemtoResult.ValidationFailed
