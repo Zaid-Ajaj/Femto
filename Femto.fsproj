@@ -4,9 +4,10 @@
         <ToolCommandName>femto</ToolCommandName>
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
-        <TargetFramework>netcoreapp2.2</TargetFramework>
-        <Version>0.8.0</Version>
-        <PackageVersion>0.8.0</PackageVersion>
+        <TargetFrameworks>netcoreapp2.2; netcoreapp3.0</TargetFrameworks>
+        <Version>0.8.1</Version>
+        <PackageVersion>0.8.1</PackageVersion>
+        <PackageReleaseNotes>Publish for target framework 3.0</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
