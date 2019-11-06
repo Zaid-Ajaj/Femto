@@ -599,7 +599,7 @@ let private validateProject (library : LibraryWithNpmDeps) =
         let isCurrentPkgOk =
             match getSatisfyingPackageVersion pkg with
             | Some version ->
-                logger.Information("  | -- √ Found version {Version} that satisfies the required range", version)
+                logger.Information("  | -- ✔ Found version {Version} that satisfies the required range", version)
                 true
             | None ->
                 logger.Error("  | -- Could not find a version that satisfies the required range {Range}", pkg.RawVersion)
@@ -646,7 +646,7 @@ let previewResolutionActions
                     logger.Information("  | -- Used range {Range} in package.json", range.ToString())
                     match npmPackage.Constraint with
                     | Some requiredRange when range.IsSatisfied version ->
-                        logger.Information("  | -- √ Installed version {Version} satisfies required range {Range}", version.ToString(), requiredRange.ToString())
+                        logger.Information("  | -- ✔ Installed version {Version} satisfies required range {Range}", version.ToString(), requiredRange.ToString())
                     | _ ->
                         // since the library did not require actions, this will never be logged actually
                         logger.Error("  | -- Installed version {Version} does not satisfy required range {Range}", version.ToString(), npmPackage.Constraint |> Option.map string |> Option.defaultValue npmPackage.RawVersion)
@@ -867,14 +867,14 @@ let private runResolution (resolve : bool) (packageJson : string option) (nodeMa
         else
             let resolveActions = autoResolve nodeManager libraries installedPackages []
             if List.isEmpty resolveActions then
-                logger.Information("√ Required packages are already resolved")
+                logger.Information("✔ Required packages are already resolved")
                 FemtoResult.ValidationSucceeded
             else
                 logger.Information("Executing required actions for package resolution")
                 try
                     let cwd = (IO.Directory.GetParent packageJson).FullName
                     executeResolutionActions cwd nodeManager resolveActions
-                    logger.Information("√ Package resolution complete")
+                    logger.Information("✔ Package resolution complete")
                     FemtoResult.ValidationSucceeded
                 with
                 | ex ->
@@ -1042,7 +1042,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
             logger.Error(installationResult.Result.Output)
             FemtoResult.NugetInstallationFailed
         else
-            logger.Information("√ Nuget package {Feliz} installed successfully", installArgs.Package)
+            logger.Information("✔ Nuget package {Feliz} installed successfully", installArgs.Package)
             logger.Information("Resolving potentially required npm package with {command}", "femto --resolve")
             runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
 
@@ -1095,7 +1095,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} installed successfully", installArgs.Package)
+                        logger.Information("✔ Nuget package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
                         runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
                     else
@@ -1124,7 +1124,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} installed successfully", installArgs.Package)
+                        logger.Information("✔ Nuget package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
                         runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
                     else
@@ -1151,7 +1151,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} installed successfully", installArgs.Package)
+                        logger.Information("✔ Nuget package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
                         runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
                     else
@@ -1178,7 +1178,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Package {Package} installed successfully", installArgs.Package)
+                        logger.Information("✔ Package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
                         runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
                     else
@@ -1228,7 +1228,7 @@ and private uninstallPackage (project: string) (package: string) =
             logger.Error(installationResult.Result.Output)
             FemtoResult.NugetInstallationFailed
         else
-            logger.Information("√ Nuget package {Feliz} was uninstalled", package)
+            logger.Information("✔ Nuget package {Feliz} was uninstalled", package)
             FemtoResult.PackageUninstalled
 
     | Some references ->
@@ -1268,7 +1268,7 @@ and private uninstallPackage (project: string) (package: string) =
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} was uninstalled", package)
+                        logger.Information("✔ Nuget package {Package} was uninstalled", package)
                         FemtoResult.PackageUninstalled
                     else
                         let erroredShellCommand =
@@ -1296,7 +1296,7 @@ and private uninstallPackage (project: string) (package: string) =
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} was uninstalled", package)
+                        logger.Information("✔ Nuget package {Package} was uninstalled", package)
                         FemtoResult.PackageUninstalled
                     else
                         let erroredShellCommand =
@@ -1322,7 +1322,7 @@ and private uninstallPackage (project: string) (package: string) =
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} was unintalled", package)
+                        logger.Information("✔ Nuget package {Package} was unintalled", package)
                         FemtoResult.PackageUninstalled
                     else
                         let erroredShellCommand =
@@ -1348,7 +1348,7 @@ and private uninstallPackage (project: string) (package: string) =
                 |> fun installProcess ->
                     if installProcess.ExitCode = 0
                     then
-                        logger.Information("√ Nuget package {Package} was uninstalled", package)
+                        logger.Information("✔ Nuget package {Package} was uninstalled", package)
                         FemtoResult.PackageUninstalled
                     else
                         let erroredShellCommand =
@@ -1441,7 +1441,7 @@ and private runner (args : FemtoArgs) =
                                     runner { args with LogInitialProjectAnalysis = false }
                         else
                             if installPaketFromBootstrapper paketDepsParent.FullName then
-                                logger.Information("√ Paket was installed successfully, restarting...")
+                                logger.Information("✔ Paket was installed successfully, restarting...")
                                 runner { args with LogInitialProjectAnalysis = false }
                             else
                                 logger.Error("{Command} Failed with error {Error}", "dotnet restore", error)
