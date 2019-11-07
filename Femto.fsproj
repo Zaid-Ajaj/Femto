@@ -5,9 +5,9 @@
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
         <TargetFrameworks>netcoreapp2.2; netcoreapp3.0</TargetFrameworks>
-        <Version>0.8.1</Version>
-        <PackageVersion>0.8.1</PackageVersion>
-        <PackageReleaseNotes>Publish for target framework 3.0</PackageReleaseNotes>
+        <Version>0.8.2</Version>
+        <PackageVersion>0.8.2</PackageVersion>
+        <PackageReleaseNotes>Change check marks</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
