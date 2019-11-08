@@ -1602,6 +1602,10 @@ let parseArgs (cliArgs : CLIArguments list) =
 
 [<EntryPoint>]
 let main argv =
+    // make sure the check marks appear as they should
+    // using standard utf-8 encoding
+    Console.OutputEncoding <- Text.Encoding.UTF8
+
     let parser = ArgumentParser.Create<CLIArguments>("femto")
 
     let printUsage() =
