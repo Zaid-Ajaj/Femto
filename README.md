@@ -2,6 +2,8 @@
 
 Femto is CLI tool that manages the npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings.
 
+Read [Introducing Femto](https://fable.io/blog/Introducing-Femto.html) for an in-depth understanding of why Femto is needed and what problem it solves. 
+
 ### Install
 ```
 dotnet tool install femto --global
