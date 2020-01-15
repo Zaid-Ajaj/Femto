@@ -36,7 +36,7 @@ type ResolveAction =
     | UninstallDev of library:string * package: string * version:string
     | UnableToResolve of library:string * package:string * range:string * error: string
 
-type RawPackage = {
+type PackageJson = {
     Dependencies : Map<string, string> option
     DevDependencies : Map<string, string> option
 }
@@ -86,7 +86,7 @@ let needsNodeModules (packageJson: string) =
 let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackage> =
     let file = IO.File.ReadAllText packageJson
     let topLevelPackages =
-        match Decode.Auto.fromString<RawPackage>(file, isCamelCase = true) with
+        match Decode.Auto.fromString<PackageJson>(file, isCamelCase = true) with
         | Ok rawPackage ->
             let createInstalledPackages isDevDependency (dependencies: Map<string, string> option) =
                  dependencies
@@ -102,7 +102,9 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
                 yield! createInstalledPackages false rawPackage.Dependencies;
                 yield! createInstalledPackages true rawPackage.DevDependencies
             ]
-        | Error _ -> ResizeArray []
+        | Error errorMessage ->
+            logger.Error("Couldn't find packages in 'package.json' file. Reason: {Message}", errorMessage)
+            ResizeArray []
 
     if needsNodeModules packageJson
     then
@@ -122,19 +124,24 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
             if not (IO.File.Exists pkgJson)
                 then ()
             else
-                let nameAndVersionDecoder = Decode.object (fun it ->
-                    (it.Required.Field "name" Decode.string,
-                     it.Required.Field "version" Decode.string)
+                let nameAndVersionDecoder = Decode.object (fun get ->
+                    (get.Required.Field "name" Decode.string,
+                     get.Required.Field "version" Decode.string)
                 )
-                
-                let (name, version) =
+                    
+                let decoded =
                     File.readAllTextNonBlocking pkgJson
-                    |> Decode.unsafeFromString nameAndVersionDecoder
-                
-                for pkg in topLevelPackages do
-                    if pkg.Name = name
-                    then pkg.Installed <- Some (SemVer.Version version)
-                    else ()
+                    |> Decode.fromString nameAndVersionDecoder
+                    
+                match decoded with
+                | Ok (name, version) ->
+                    for package in topLevelPackages do
+                        if package.Name = name
+                        then package.Installed <- Some (SemVer.Version version)
+                        else ()
+                | Error errorMessage ->
+                    logger.Error("Couldn't decode 'package.json' from {PackageJson}. Reason: {Message}", pkgJson, errorMessage)
+                    ()
 
         topLevelPackages
 
@@ -552,7 +559,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save" ]
             | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall ]
 
-        logger.Information("Installing dependencies [{Libraryies}]", String.concat ", " packagesToInstall)
+        logger.Information("Installing dependencies [{Libraries}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (String.concat ", " packagesToInstall))
@@ -571,7 +578,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save-dev" ]
             | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall; yield "--dev" ]
 
-        logger.Information("Installing development dependencies [{Libraryies}]", String.concat ", " packagesToInstall)
+        logger.Information("Installing development dependencies [{Libraries}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing dev %s" (String.concat ", " packagesToInstall))
@@ -960,10 +967,14 @@ let installPaketFromBootstrapper projectRoot =
                 |> Decode.field "data"
                 
             let latestPaketVersion =
-                paketSearchResult
-                |> Decode.unsafeFromString dataDecoder
-                |> Seq.tryFind (fun (id, _) -> id = "Paket")
-                |> Option.map (fun (_, version) -> version)
+                match Decode.fromString dataDecoder paketSearchResult with
+                | Ok packages ->
+                    packages
+                    |> Seq.tryFind (fun (id, _) -> id = "Paket")
+                    |> Option.map (fun (_, version) -> version)
+                | Error errorMessage ->
+                    logger.Error("Couldn't decode nuget packages. Reason: {Message}", errorMessage)
+                    None
 
             match latestPaketVersion with
             | None ->
