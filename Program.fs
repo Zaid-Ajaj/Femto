@@ -4,7 +4,6 @@ open System
 open System.Net.Http
 open Serilog
 open Npm
-open Newtonsoft.Json.Linq
 open FSharp.Compiler.AbstractIL.Internal.Library
 open Fake.Core
 open Thoth.Json.Net
@@ -36,6 +35,11 @@ type ResolveAction =
     | Uninstall of library:string * package: string * version:string
     | UninstallDev of library:string * package: string * version:string
     | UnableToResolve of library:string * package:string * range:string * error: string
+
+type PackageJson = {
+    Dependencies : Map<string, string> option
+    DevDependencies : Map<string, string> option
+}
 
 let findLibraryWithNpmDeps (project: CrackedFsproj) =
     [ yield project.ProjectFile
@@ -80,37 +84,27 @@ let needsNodeModules (packageJson: string) =
     not nodeModulesExists
 
 let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackage> =
-    let content = JObject.Parse(IO.File.ReadAllText packageJson)
-    let dependencies : JProperty list = [
-        if content.ContainsKey "dependencies"
-        then yield! (content.["dependencies"] :?> JObject).Properties() |> List.ofSeq
-    ]
-
-    let devDependencies = [
-        if content.ContainsKey "devDependencies"
-        then yield! (content.["devDependencies"] :?> JObject).Properties() |> List.ofSeq
-    ]
-
-    let topLevelPackages = ResizeArray [
-        yield! [
-            for package in dependencies -> {
-                Name = package.Name;
-                Range = Some (SemVer.Range(package.Value.ToObject<string>()));
-                Installed = None
-                DevDependency = false
-            }
-        ]
-
-        yield! [
-            for package in devDependencies -> {
-                Name = package.Name;
-                Range = Some (SemVer.Range(package.Value.ToObject<string>()));
-                Installed = None
-                DevDependency = true
-            }
-        ]
-
-    ]
+    let file = IO.File.ReadAllText packageJson
+    let topLevelPackages =
+        match Decode.Auto.fromString<PackageJson>(file, isCamelCase = true) with
+        | Ok rawPackage ->
+            let createInstalledPackages isDevDependency (dependencies: Map<string, string> option) =
+                 dependencies
+                 |> Option.defaultValue Map.empty
+                 |> Seq.map (fun pair -> {
+                    Name = pair.Key;
+                    Range = Some (SemVer.Range(pair.Value));
+                    Installed = None;
+                    DevDependency = isDevDependency
+                })
+            
+            ResizeArray [
+                yield! createInstalledPackages false rawPackage.Dependencies;
+                yield! createInstalledPackages true rawPackage.DevDependencies
+            ]
+        | Error errorMessage ->
+            logger.Error("Couldn't find packages in 'package.json' file. Reason: {Message}", errorMessage)
+            ResizeArray []
 
     if needsNodeModules packageJson
     then
@@ -130,11 +124,24 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
             if not (IO.File.Exists pkgJson)
                 then ()
             else
-                let pkgJsonContent = JObject.Parse(File.readAllTextNonBlocking pkgJson)
-                for pkg in topLevelPackages do
-                    if pkg.Name = pkgJsonContent.["name"].ToObject<string>()
-                    then pkg.Installed <- Some (SemVer.Version (pkgJsonContent.["version"].ToObject<string>()))
-                    else ()
+                let nameAndVersionDecoder = Decode.object (fun get ->
+                    (get.Required.Field "name" Decode.string,
+                     get.Required.Field "version" Decode.string)
+                )
+                    
+                let decoded =
+                    File.readAllTextNonBlocking pkgJson
+                    |> Decode.fromString nameAndVersionDecoder
+                    
+                match decoded with
+                | Ok (name, version) ->
+                    for package in topLevelPackages do
+                        if package.Name = name
+                        then package.Installed <- Some (SemVer.Version version)
+                        else ()
+                | Error errorMessage ->
+                    logger.Error("Couldn't decode 'package.json' from {PackageJson}. Reason: {Message}", pkgJson, errorMessage)
+                    ()
 
         topLevelPackages
 
@@ -552,7 +559,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save" ]
             | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall ]
 
-        logger.Information("Installing dependencies [{Libraryies}]", String.concat ", " packagesToInstall)
+        logger.Information("Installing dependencies [{Libraries}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing %s" (String.concat ", " packagesToInstall))
@@ -571,7 +578,7 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save-dev" ]
             | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall; yield "--dev" ]
 
-        logger.Information("Installing development dependencies [{Libraryies}]", String.concat ", " packagesToInstall)
+        logger.Information("Installing development dependencies [{Libraries}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
         |> CreateProcess.withWorkingDirectory cwd
         |> CreateProcess.ensureExitCodeWithMessage (sprintf "Error while installing dev %s" (String.concat ", " packagesToInstall))
@@ -881,7 +888,7 @@ let private runResolution (resolve : bool) (packageJson : string option) (nodeMa
                     logger.Error(ex.Message)
                     FemtoResult.UnexpectedError
 
-/// Returns wether paket is installed as a global dotnet tool
+/// Returns whether paket is installed as a global dotnet tool
 let isPaketInstalledGlobally() =
     [ "tool"; "list"; "--global" ]
     |> CreateProcess.xplatCommand "dotnet"
@@ -895,7 +902,7 @@ let isPaketInstalledGlobally() =
             |> String.split '\n'
             |> Seq.exists (fun line -> line.StartsWith "paket")
 
-/// Returns wether paket is installed a local dotnet CLI tool
+/// Returns whether paket is installed a local dotnet CLI tool
 /// This function checks whether the entry "paket" exists in { "tools": [tool entries] }
 /// The contents of the JSON is taken from .config/dotnet-tools.json which is the tool manifest
 /// for local CLI tools in .NET Core 3 onwards
@@ -903,15 +910,13 @@ let isPaketInstalledAsLocalCliTool (paketDependenciesWorkingDir: string) =
     try
         let toolsConfigPath = IO.Path.Combine(paketDependenciesWorkingDir, ".config", "dotnet-tools.json")
         if IO.File.Exists toolsConfigPath then
-            let toolsContent = IO.File.ReadAllText toolsConfigPath
-            let toolsConfig = JObject.Parse(toolsContent)
-            match toolsConfig.TryGetValue "tools" with
-            | true, value ->
-                let tools = unbox<JObject> value
-                match tools.TryGetValue "paket" with
-                | true, _ -> true
-                | _ -> false
-            | _ -> false
+            let toolsContentDecoded =
+                IO.File.ReadAllText toolsConfigPath
+                |> Decode.fromString (Decode.at ["tools"; "paket"] Decode.value)
+            
+            match toolsContentDecoded with
+            | Ok _ -> true
+            | Error _ -> false
         else
             false
     with
@@ -952,12 +957,24 @@ let installPaketFromBootstrapper projectRoot =
         try
             use httpClient = new HttpClient()
             let! paketSearchResult = Async.AwaitTask (httpClient.GetStringAsync("https://azuresearch-usnc.nuget.org/query?q=Paket&prerelease=false"))
-            let parsedSearch = JObject.Parse(paketSearchResult)
-            let packages = unbox<JArray> parsedSearch.["data"]
+            
+            let dataDecoder =
+                Decode.object (fun it ->
+                    (it.Required.Field "id" Decode.string,
+                     it.Required.Field "version" Decode.string)
+                )
+                |> Decode.list
+                |> Decode.field "data"
+                
             let latestPaketVersion =
-                packages
-                |> Seq.tryFind (fun pkg -> pkg.["id"].ToObject<string>() = "Paket")
-                |> Option.map (fun pkg -> pkg.["version"].ToObject<string>())
+                match Decode.fromString dataDecoder paketSearchResult with
+                | Ok packages ->
+                    packages
+                    |> Seq.tryFind (fun (id, _) -> id = "Paket")
+                    |> Option.map (fun (_, version) -> version)
+                | Error errorMessage ->
+                    logger.Error("Couldn't decode nuget packages. Reason: {Message}", errorMessage)
+                    None
 
             match latestPaketVersion with
             | None ->
