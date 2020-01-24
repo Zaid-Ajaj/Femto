@@ -5,9 +5,9 @@
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
         <TargetFrameworks>netcoreapp2.2; netcoreapp3.0</TargetFrameworks>
-        <Version>0.8.3</Version>
-        <PackageVersion>0.8.3</PackageVersion>
-        <PackageReleaseNotes>Make check marks appear properly using utf-8 encoding</PackageReleaseNotes>
+        <Version>0.8.4</Version>
+        <PackageVersion>0.8.4</PackageVersion>
+        <PackageReleaseNotes>Use of consistent and safe JSON handling with Thoth.Json</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />

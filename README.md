@@ -2,7 +2,7 @@
 
 Femto is CLI tool that manages the npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings.
 
-Read [Introducing Femto](https://fable.io/blog/Introducing-Femto.html) for an in-depth understanding of why Femto is needed and what problem it solves. 
+Read [Introducing Femto](https://fable.io/blog/Introducing-Femto.html) for an in-depth understanding of why Femto is needed and what problem it solves.
 
 ### Install
 ```
@@ -72,23 +72,15 @@ In order for Femto to pick up the npm packages that your library depends upon, y
 ```xml
 <PropertyGroup>
   <NpmDependencies>
-      <NpmPackage Name="date-fns" Version=">= 1.30.0" />
+      <NpmPackage Name="date-fns" Version="gt 1.30.0 lt 2.0.0" ResolutionStrategy="Max" />
   </NpmDependencies>
 </PropertyGroup>
 ```
-Notice here in the example, we have one npm package we depend upon which has requires a version that satisfies that range `>= 1.30.0`. If the user doesn't have that version installed or has an old version, a message will appear telling them how to solve the issue.
+Notice here in the example, we have one npm package we depend upon which has requires a version that satisfies the range `gt 1.30.0 lt 2.0.0` and the resolution strategy is max. This means that Femto will find the version in this current major release with latest bug fixes but nothing in the next release because we cannot assume the binding will still work in the next major release which will most likely contain breaking changes. It is recommended to always follow the format above when specifying the version requirements.
 
 ### Resolution Strategy
 
 You can customize the resolution strategy by adding `ResolutionStrategy` attribute to an `NpmPackage` node. Accepted values are `min` and `max` (case-insensitive). If `ResolutionStrategy` is not set, we default to `min` strategy.
-
-```xml
-<PropertyGroup>
-  <NpmDependencies>
-      <NpmPackage Name="date-fns" Version=">= 1.30.0" ResolutionStrategy="max" />
-  </NpmDependencies>
-</PropertyGroup>
-```
 
 ### Development Dependency
 
@@ -97,7 +89,7 @@ You can specify whether the npm package your library depends upon is actually a 
 ```xml
 <PropertyGroup>
   <NpmDependencies>
-      <NpmPackage Name="date-fns" Version=">= 1.30.0" DevDependency="true" />
+      <NpmPackage Name="date-fns" Version="gt 1.30.0 lt 2.0.0" ResolutionStrategy="Max" DevDependency="true" />
   </NpmDependencies>
 </PropertyGroup>
 ```
