@@ -1,0 +1,1 @@
+dotnet run --project ./build/Femto.Build.fsproj -- $1

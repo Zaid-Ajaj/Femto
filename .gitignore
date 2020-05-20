@@ -4,3 +4,4 @@ obj
 .fake
 .ionide
 node_modules/
+.vs

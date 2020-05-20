@@ -97,7 +97,7 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
                     Installed = None;
                     DevDependency = isDevDependency
                 })
-            
+
             ResizeArray [
                 yield! createInstalledPackages false rawPackage.Dependencies;
                 yield! createInstalledPackages true rawPackage.DevDependencies
@@ -128,11 +128,11 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
                     (get.Required.Field "name" Decode.string,
                      get.Required.Field "version" Decode.string)
                 )
-                    
+
                 let decoded =
                     File.readAllTextNonBlocking pkgJson
                     |> Decode.fromString nameAndVersionDecoder
-                    
+
                 match decoded with
                 | Ok (name, version) ->
                     for package in topLevelPackages do
@@ -913,7 +913,7 @@ let isPaketInstalledAsLocalCliTool (paketDependenciesWorkingDir: string) =
             let toolsContentDecoded =
                 IO.File.ReadAllText toolsConfigPath
                 |> Decode.fromString (Decode.at ["tools"; "paket"] Decode.value)
-            
+
             match toolsContentDecoded with
             | Ok _ -> true
             | Error _ -> false
@@ -957,7 +957,7 @@ let installPaketFromBootstrapper projectRoot =
         try
             use httpClient = new HttpClient()
             let! paketSearchResult = Async.AwaitTask (httpClient.GetStringAsync("https://azuresearch-usnc.nuget.org/query?q=Paket&prerelease=false"))
-            
+
             let dataDecoder =
                 Decode.object (fun it ->
                     (it.Required.Field "id" Decode.string,
@@ -965,7 +965,7 @@ let installPaketFromBootstrapper projectRoot =
                 )
                 |> Decode.list
                 |> Decode.field "data"
-                
+
             let latestPaketVersion =
                 match Decode.fromString dataDecoder paketSearchResult with
                 | Ok packages ->
@@ -1060,8 +1060,8 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
             FemtoResult.NugetInstallationFailed
         else
             logger.Information("✔ Nuget package {Feliz} installed successfully", installArgs.Package)
-            logger.Information("Resolving potentially required npm package with {command}", "femto --resolve")
-            runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
+            logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
+            runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true; LogInitialProjectAnalysis = false }
 
     | Some references ->
         logger.Information("Detected {References} file -> use {Manager}", "paket.references", "paket")
@@ -1072,22 +1072,27 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
             |> Option.map (fun line -> line.Replace("group", "").Trim())
             |> Option.defaultValue "Main"
 
-        match installArgs with
-        | { Package = _; Version = None } ->
+        match installArgs.Version with
+        | None  ->
             logger.Information("Installing {Package} within dependency group {Group}",  installArgs.Package, group)
 
-        | { Package = _; Version = Some version } ->
+        |  Some version ->
             logger.Information("Installing {Package} version {Version} within dependency group {Group}",  installArgs.Package, version, group)
 
         match findFile "paket.dependencies" project with
         | None ->
             FemtoResult.PaketInstallationFailedNoPaketDependencies
         | Some paketDependencies ->
+            let escapedProjectPath =
+                if not (project.Contains " ")
+                then project
+                else sprintf "\"%s\"" project
+
             let paketInstallArgs =  [
                 yield "add"
                 yield installArgs.Package
                 yield "--project"
-                yield project
+                yield escapedProjectPath
                 yield "--group"
                 yield group
 
@@ -1114,7 +1119,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                     then
                         logger.Information("✔ Nuget package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
-                        runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
+                        runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true; LogInitialProjectAnalysis = false }
                     else
                         let erroredShellCommand =
                             sprintf "%s> %s %s"
@@ -1143,7 +1148,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                     then
                         logger.Information("✔ Nuget package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
-                        runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
+                        runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true; LogInitialProjectAnalysis = false }
                     else
                         let erroredShellCommand =
                             sprintf "%s> %s %s"
@@ -1197,7 +1202,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                     then
                         logger.Information("✔ Package {Package} installed successfully", installArgs.Package)
                         logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
-                        runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
+                        runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true; LogInitialProjectAnalysis = false }
                     else
                         let erroredShellCommand =
                             sprintf "%s> %s %s"
@@ -1214,7 +1219,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                         FemtoResult.PaketFailed
             else
                 if installPaketFromBootstrapper projectRoot then
-                    runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true }
+                    runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true; LogInitialProjectAnalysis = false }
                 else
                     FemtoResult.PaketNotFound
 
@@ -1398,8 +1403,8 @@ and private runner (args : FemtoArgs) =
         | Some project ->
             let projectWorkingDir = (IO.Directory.GetParent project).FullName
             if args.LogInitialProjectAnalysis then
-              logger.Information("Analyzing project {Project}", project)
-              logger.Information("Running {Command} against the project", "dotnet restore")
+                logger.Information("Analyzing project {Project}", project)
+                logger.Information("Running {Command} against the project", "dotnet restore")
 
             let restoreResult =
                 let processOutput =
