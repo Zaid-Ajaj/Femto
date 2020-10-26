@@ -5,9 +5,9 @@
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
         <TargetFrameworks>netcoreapp2.2; netcoreapp3.0; netcoreapp3.1</TargetFrameworks>
-        <Version>0.8.6</Version>
-        <PackageVersion>0.8.6</PackageVersion>
-        <PackageReleaseNotes>Fix path escaping when using paket to install packages</PackageReleaseNotes>
+        <Version>0.8.7</Version>
+        <PackageVersion>0.8.7</PackageVersion>
+        <PackageReleaseNotes>Fix using local paket installation</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
