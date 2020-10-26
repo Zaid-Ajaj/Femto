@@ -1165,8 +1165,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                         FemtoResult.PaketFailed
             elif isPaketInstalledAsLocalCliTool projectRoot then
                 logger.Information("Using locally installed {Manager}", "paket")
-                paketInstallArgs
-                |> CreateProcess.xplatCommand "dotnet paket"
+                CreateProcess.xplatCommand "dotnet" ("paket" :: paketInstallArgs)
                 |> CreateProcess.withWorkingDirectory projectRoot
                 |> CreateProcess.redirectOutput
                 |> Proc.run
@@ -1182,7 +1181,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
                               // workding directory
                               projectWorkingDir
                               // program
-                              "dotnet paket"
+                              "dotnet"
                               // args
                               (String.concat " " paketInstallArgs)
                         logger.Error("Error while running the following command:")
@@ -1336,8 +1335,7 @@ and private uninstallPackage (project: string) (package: string) =
                         FemtoResult.PaketFailed
             elif isPaketInstalledAsLocalCliTool projectRoot then
                 logger.Information("Using locally installed {Manager}", "paket")
-                paketInstallArgs
-                |> CreateProcess.xplatCommand "dotnet paket"
+                CreateProcess.xplatCommand "dotnet" ("paket" :: paketInstallArgs)
                 |> CreateProcess.withWorkingDirectory projectRoot
                 |> CreateProcess.redirectOutput
                 |> Proc.run
