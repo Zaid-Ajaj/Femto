@@ -110,7 +110,7 @@ If you happen to use Visual Studio to build your library, it will escape symbols
 
 
 ### Validate your dependencies
-If you are a library author and wondering whether Femto will pick uo the dependencies you specified in your project file, then simply run:
+If you are a library author and wondering whether Femto will pick up the dependencies you specified in your project file, then simply run:
 ```
 femto --validate
 
