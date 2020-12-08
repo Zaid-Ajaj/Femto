@@ -9,13 +9,14 @@ open Fake.Core
 let path xs = Path.Combine(Array.ofList xs)
 
 let solutionRoot = Files.findParent __SOURCE_DIRECTORY__ "Femto.sln";
-
 let src = path [ solutionRoot; "src" ]
-let tests = path [ solutionRoot; "tests" ]
+
+let clean() =
+    Shell.deleteDir (path [ src; "bin" ])
+    Shell.deleteDir (path [ src; "obj" ])
 
 let pack() =
-    Shell.deleteDir (path [ "src"; "bin" ])
-    Shell.deleteDir (path [ "src"; "obj" ])
+    clean()
     if Shell.Exec(Tools.dotnet, "pack --configuration Release", src) <> 0 then
         failwith "Pack failed"
     else
@@ -24,6 +25,7 @@ let pack() =
         then failwith "Local install failed"
 
 let publish() =
+    clean()
     if Shell.Exec(Tools.dotnet, "pack --configuration Release", src) <> 0 then
         failwith "Pack failed"
     else

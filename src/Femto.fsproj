@@ -4,10 +4,11 @@
         <ToolCommandName>femto</ToolCommandName>
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
+        <RollForward>Major</RollForward>
         <TargetFrameworks>netcoreapp2.2; netcoreapp3.0; netcoreapp3.1</TargetFrameworks>
-        <Version>0.8.7</Version>
-        <PackageVersion>0.8.7</PackageVersion>
-        <PackageReleaseNotes>Fix using local paket installation</PackageReleaseNotes>
+        <Version>0.9.0</Version>
+        <PackageVersion>0.9.0</PackageVersion>
+        <PackageReleaseNotes>Use rollforward option to allow running under NET5 SDK</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
