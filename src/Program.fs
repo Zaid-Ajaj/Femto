@@ -1554,9 +1554,9 @@ type CLIArguments =
             | Project _ -> "specify the path to the F# project."
             | Validate -> "check that the XML tags used in the F# project file are parsable and a npm package version can be calculated."
             | Resolve -> "resolve and install required packages."
-            | Version _ -> "display the current version of Femto."
             | Install _ -> "install a package into a project"
             | Uninstall _ -> "uninstall a package from the project"
+            | Version _ -> "display the current version of Femto."
 
 let parseArgs (cliArgs : CLIArguments list) =
     let rec apply (cliArgs : CLIArguments list) (res : FemtoArgs) =
