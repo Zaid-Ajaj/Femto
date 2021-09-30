@@ -122,34 +122,31 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
         let rec checkPackageJsons nodeModulePath =
             for dir in IO.Directory.GetDirectories nodeModulePath do
                 let dirname = IO.Path.GetFileName(dir)
-                let pkgJson = IO.Path.Combine(dir, "package.json")
-                // Some packages create a cache dir in node_modules starting with . like .vite
-                if dirname.StartsWith(".")
-                    then ()
                 // Scoped packages
-                elif dirname.StartsWith("@")
-                    then checkPackageJsons dir
-                if not (IO.File.Exists pkgJson)
-                    then ()
+                if dirname.StartsWith("@") then
+                    checkPackageJsons dir
                 else
-                    let nameAndVersionDecoder = Decode.object (fun get ->
-                        (get.Required.Field "name" Decode.string,
-                         get.Required.Field "version" Decode.string)
-                    )
+                    let pkgJson = IO.Path.Combine(dir, "package.json")
+                    // Some packages create a cache dir in node_modules starting with . like .vite
+                    if not(dirname.StartsWith(".")) && IO.File.Exists pkgJson then
+                        let nameAndVersionDecoder = Decode.object (fun get ->
+                            (get.Required.Field "name" Decode.string,
+                             get.Required.Field "version" Decode.string)
+                        )
 
-                    let decoded =
-                        File.readAllTextNonBlocking pkgJson
-                        |> Decode.fromString nameAndVersionDecoder
+                        let decoded =
+                            File.readAllTextNonBlocking pkgJson
+                            |> Decode.fromString nameAndVersionDecoder
 
-                    match decoded with
-                    | Ok (name, version) ->
-                        for package in topLevelPackages do
-                            if package.Name = name
-                            then package.Installed <- Some (SemVer.Version version)
-                            else ()
-                    | Error errorMessage ->
-                        logger.Error("Couldn't decode 'package.json' from {PackageJson}. Reason: {Message}", pkgJson, errorMessage)
-                        ()
+                        match decoded with
+                        | Ok (name, version) ->
+                            for package in topLevelPackages do
+                                if package.Name = name
+                                then package.Installed <- Some (SemVer.Version version)
+                                else ()
+                        | Error errorMessage ->
+                            logger.Error("Couldn't decode 'package.json' from {PackageJson}. Reason: {Message}", pkgJson, errorMessage)
+                            ()
 
         checkPackageJsons nodeModulePath
         topLevelPackages
