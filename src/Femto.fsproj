@@ -5,10 +5,10 @@
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
-        <TargetFrameworks>netcoreapp2.2; netcoreapp3.0; netcoreapp3.1</TargetFrameworks>
-        <Version>0.9.0</Version>
-        <PackageVersion>0.9.0</PackageVersion>
-        <PackageReleaseNotes>Use rollforward option to allow running under NET5 SDK</PackageReleaseNotes>
+        <TargetFramework>net5.0</TargetFramework>
+        <Version>0.10.0</Version>
+        <PackageVersion>0.10.0</PackageVersion>
+        <PackageReleaseNotes>Ignore folders in node_modules starting with dot and recursively search scoped packages</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
