@@ -1,1 +1,1 @@
-dotnet run --project ./build/Build.fsproj -- %1
+dotnet run --project ./build/Femto.Build.fsproj -- %1
