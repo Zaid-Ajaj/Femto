@@ -140,8 +140,9 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
                     // Some packages create a cache dir in node_modules starting with . like .vite
                     if not(dirname.StartsWith(".")) && IO.File.Exists pkgJson then
                         let nameAndVersionDecoder = Decode.object (fun get ->
-                            (get.Required.Field "name" Decode.string,
-                             get.Required.Field "version" Decode.string)
+                            let name = get.Required.Field "name" Decode.string
+                            let version = get.Required.Field "version" Decode.string
+                            name, version
                         )
 
                         let decoded =
@@ -1080,7 +1081,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
             logger.Error(installationResult.Result.Output)
             FemtoResult.NugetInstallationFailed
         else
-            logger.Information("✔ Nuget package {Feliz} installed successfully", installArgs.Package)
+            logger.Information("✔ Nuget package {Package} installed successfully", installArgs.Package)
             logger.Information("Resolving potentially required npm packages with {command}", "femto --resolve")
             runner { originalArgs with PackageArgs = PackageArgs.DoNothing; Resolve = true; LogInitialProjectAnalysis = false }
 
@@ -1097,7 +1098,7 @@ let rec private installPackage (project: string) (installArgs: InstallArgs) (ori
         | None  ->
             logger.Information("Installing {Package} within dependency group {Group}",  installArgs.Package, group)
 
-        |  Some version ->
+        | Some version ->
             logger.Information("Installing {Package} version {Version} within dependency group {Group}",  installArgs.Package, version, group)
 
         match findFile "paket.dependencies" project with

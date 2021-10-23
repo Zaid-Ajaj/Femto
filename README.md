@@ -1,6 +1,6 @@
 # Femto  [![Nuget](https://img.shields.io/nuget/v/Femto.svg?colorB=green)](https://www.nuget.org/packages/Femto)
 
-Femto is CLI tool that manages the npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings.
+Femto is CLI tool that manages the npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings. It installs them using the npm package manager that you are using whether that is `npm` (default), `yarn` when `yarn.lock` is found or `pnpm` when `pnpm-lock.yaml` is detected.
 
 Read [Introducing Femto](https://fable.io/blog/2019/2019-06-29-Introducing-Femto.html) for an in-depth understanding of why Femto is needed and what problem it solves.
 
