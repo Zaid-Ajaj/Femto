@@ -22,11 +22,18 @@ type LibraryWithNpmDeps = {
 type NodeManager =
     | Yarn
     | Npm
+    | Pnpm
 
     member this.CommandName =
         match this with
         | Yarn -> "yarn"
         | Npm -> "npm"
+        | Pnpm -> "pnpm"
+
+let (|NpmCompatible|Yarn|) manager =
+    match manager with
+    | NodeManager.Npm | NodeManager.Pnpm -> NpmCompatible
+    | NodeManager.Yarn -> Yarn
 
 [<RequireQualifiedAccess>]
 type ResolveAction =
@@ -67,13 +74,16 @@ let rec findFile (fileName: string) (project: string) =
 /// Determines the full path of the package.json file by recursively checking every directory and it's parent starting from the path of the project file
 let rec findPackageJson = findFile "package.json"
 
-/// Determines which node package maneger to use by checking whether the yarn.lock file is present next to package.json
+/// Determines which node package manager to use by checking whether the yarn.lock file is present next to package.json
 let workspaceCommand (packageJson: string) =
     let parentDir = IO.Directory.GetParent packageJson
     let siblings = [ yield! IO.Directory.GetFiles parentDir.FullName ]
     let yarnLockExists = siblings |> List.exists (fun file -> file.EndsWith "yarn.lock")
+    let pnpmLockExists = siblings |> List.exists (fun file -> file.EndsWith "pnpm-lock.yaml")
     if yarnLockExists
     then NodeManager.Yarn
+    else if pnpmLockExists
+    then NodeManager.Pnpm
     else NodeManager.Npm
 
 /// Determines whether npm packages have been restored by checking the existence of node_modules directory is present next to package.json
@@ -180,8 +190,9 @@ module CreateProcess =
 
 let private getPackageVersions (nodeManager : NodeManager) (pkg : NpmDependency) =
     match nodeManager with
-    | NodeManager.Npm ->
+    | NpmCompatible ->
         let res =
+            // Warning: pnpm does not support show, but you can use npm show
             CreateProcess.xplatCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
             |> CreateProcess.redirectOutput
             |> Proc.run
@@ -192,9 +203,9 @@ let private getPackageVersions (nodeManager : NodeManager) (pkg : NpmDependency)
         else
             None
 
-    | NodeManager.Yarn ->
+    | Yarn ->
         let res =
-            CreateProcess.xplatCommand "yarn" [ "info"; pkg.Name; "versions"; "--json" ]
+            CreateProcess.xplatCommand nodeManager.CommandName [ "info"; pkg.Name; "versions"; "--json" ]
             |> CreateProcess.redirectOutput
             |> CreateProcess.ensureExitCode
             |> Proc.run
@@ -541,10 +552,11 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
 
     if not (List.isEmpty uninstallPackages) then
         // then there some packages we need to uninstall first
-        let program, args =
+        let program = manager.CommandName
+        let args =
             match manager with
-            | NodeManager.Npm -> "npm", [ yield "uninstall"; yield! uninstallPackages ]
-            | NodeManager.Yarn -> "yarn", [ yield "remove"; yield! uninstallPackages ]
+            | NpmCompatible -> [ yield "uninstall"; yield! uninstallPackages ]
+            | Yarn -> [ yield "remove"; yield! uninstallPackages ]
 
         logger.Information("Uninstalling [{Libraries}]", String.concat ", " uninstallPackages)
         CreateProcess.xplatCommand program args
@@ -560,10 +572,11 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             dependenciesToInstall
             |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
 
-        let program, args =
+        let program = manager.CommandName
+        let args =
             match manager with
-            | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save" ]
-            | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall ]
+            | NpmCompatible -> [ yield "install"; yield! packagesToInstall; yield "--save" ]
+            | Yarn -> [ yield "add"; yield! packagesToInstall ]
 
         logger.Information("Installing dependencies [{Libraries}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
@@ -579,10 +592,11 @@ let executeResolutionActions (cwd: string) (manager: NodeManager) (actions: Reso
             devDependenciesToInstall
             |> List.map (fun (package, version) -> sprintf "%s@%s" package version)
 
-        let program, args =
+        let program = manager.CommandName
+        let args =
             match manager with
-            | NodeManager.Npm -> "npm", [ yield "install"; yield! packagesToInstall; yield "--save-dev" ]
-            | NodeManager.Yarn -> "yarn", [ yield "add"; yield! packagesToInstall; yield "--dev" ]
+            | NpmCompatible -> [ yield "install"; yield! packagesToInstall; yield "--save-dev" ]
+            | Yarn -> [ yield "add"; yield! packagesToInstall; yield "--dev" ]
 
         logger.Information("Installing development dependencies [{Libraries}]", String.concat ", " packagesToInstall)
         CreateProcess.xplatCommand program args
@@ -701,6 +715,7 @@ let previewResolutionActions
             let nodeCmd npm yarn =
                 match nodeManager with
                 | NodeManager.Npm -> npm
+                | NodeManager.Pnpm -> $"p{npm}"
                 | NodeManager.Yarn -> yarn
 
             // package actions one of the following
