@@ -119,7 +119,8 @@ let findInstalledPackages (packageJson: string) : ResizeArray<InstalledNpmPackag
         let siblings = IO.Directory.GetDirectories parentDir.FullName
         // using Array.find because we know for sure node_modules is present
         let nodeModulePath = siblings |> Array.find (fun dir -> dir.EndsWith "node_modules")
-        for dir in IO.Directory.GetDirectories nodeModulePath do
+        // ignore node_modules directories starting with '.'
+        for dir in IO.Directory.GetDirectories(nodeModulePath, "[^.].*") do
             let pkgJson = IO.Path.Combine(dir, "package.json")
             if not (IO.File.Exists pkgJson)
                 then ()
