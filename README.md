@@ -18,7 +18,7 @@ Alternatively, you can specify a project file by yourself:
 ```
 femto ./Client.fsproj
 ```
-Here is an example output:
+Here is an example output (note `package.json` can be alongside the project or in a directory above):
 ```bash
 c:\projects\elmish-getting-started\src> femto
 [18:17:09 INF] Analyzing project c:/projects/elmish-getting-started/src/App.fsproj
