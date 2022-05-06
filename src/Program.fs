@@ -786,7 +786,7 @@ let previewResolutionActions
             // that satisfies the requied range
             | [ ResolveAction.Uninstall(_, _, installedVersion); ResolveAction.Install(_, _, version, range) ] ->
                 if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
-                logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
+                logger.Error("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
                 let installationCommand =
                     nodeCmd
                       (sprintf "npm install %s@%s --save" package version)
@@ -803,7 +803,7 @@ let previewResolutionActions
             // that satisfies the requied range
             | [ ResolveAction.UninstallDev(_, _, installedVersion); ResolveAction.InstallDev(_, _, version, range) ] ->
                 if range.Contains "&&" then logger.Information("  | -- {Packge} specified from multiple projects to satisfy {Range}", package, range)
-                logger.Information("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
+                logger.Error("  | -- Installed version {Version} does not satisfy [{Range}]", installedVersion, range)
                 let installationCommand =
                     nodeCmd
                       (sprintf "npm install %s@%s --save-dev" package version)
