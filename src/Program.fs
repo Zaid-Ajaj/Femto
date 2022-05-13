@@ -1537,7 +1537,7 @@ and private runner (args : FemtoArgs) =
                             { library with NpmDependencies = npmDependencies}
                         )
 
-                    let hasInvalidNpmDepencies =
+                    let invalidNpmDepencies =
                         libraries
                         |> List.filter (fun library ->
                             library.NpmDependencies
@@ -1551,7 +1551,7 @@ and private runner (args : FemtoArgs) =
                         )
 
                     // If we can't fetch the info a package, we stop here
-                    if List.isEmpty hasInvalidNpmDepencies then
+                    if List.isEmpty invalidNpmDepencies then
                         // END: Mutualized context resolution
                         if args.Validate then
                             runValidate libraries

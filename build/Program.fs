@@ -32,7 +32,13 @@ let publish() =
         let nugetKey =
             match Environment.environVarOrNone "NUGET_KEY" with
             | Some nugetKey -> nugetKey
-            | None -> failwith "The Nuget API key must be set in a NUGET_KEY environmental variable"
+            | None ->
+                Console.WriteLine "NUGET_KEY environmental variable was not found, please enter it manually"
+                Console.Write "Nuget API key: "
+                let keyFromInput = Console.ReadLine()
+                if String.isNullOrWhiteSpace keyFromInput
+                then failwith "The Nuget API key provided is empty."
+                else keyFromInput
 
         let nugetPath =
             Directory.GetFiles(path [ src; "bin"; "Release" ])
