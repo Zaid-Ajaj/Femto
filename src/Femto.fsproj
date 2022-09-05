@@ -5,10 +5,10 @@
         <PackAsTool>true</PackAsTool>
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
-        <TargetFramework>net5.0</TargetFramework>
-        <Version>0.13.0</Version>
-        <PackageVersion>0.13.0</PackageVersion>
-        <PackageReleaseNotes>better logging levels for errors</PackageReleaseNotes>
+        <TargetFramework>net6.0</TargetFramework>
+        <Version>0.14.0</Version>
+        <PackageVersion>0.14.0</PackageVersion>
+        <PackageReleaseNotes>Add support for parsing Yarn v3 output</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />

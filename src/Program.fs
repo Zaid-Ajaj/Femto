@@ -7,6 +7,8 @@ open Npm
 open FSharp.Compiler.AbstractIL.Internal.Library
 open Fake.Core
 open Thoth.Json.Net
+open Newtonsoft.Json
+open Newtonsoft.Json.Linq
 open Fake.SystemHelper
 open Argu
 
@@ -60,7 +62,7 @@ let findLibraryWithNpmDeps (project: CrackedFsproj) =
             NpmDependencies = npmDeps
         }
     )
-    |> List.filter (fun projet -> not (List.isEmpty projet.NpmDependencies))
+    |> List.filter (fun project -> not (List.isEmpty project.NpmDependencies))
 
 let rec findFile (fileName: string) (project: string) =
     let parentDir = IO.Directory.GetParent project
@@ -189,12 +191,29 @@ module CreateProcess =
 
         CreateProcess.fromRawCommand program' args'
 
-let private getPackageVersions (nodeManager : NodeManager) (pkg : NpmDependency) =
+    let withOptionalWorkingDirectory (dir: string option) proc = 
+        match dir with 
+        | Some directory -> 
+            proc 
+            |> CreateProcess.withWorkingDirectory directory 
+        | None -> 
+            proc
+
+let jsonHasKeys (keys: string list) (jsonObject: string) =
+    let node = JToken.Parse(jsonObject)
+    if not (node.Type = JTokenType.Object) then
+        false
+    else
+        keys
+        |> List.forall (fun key -> (node :?> JObject).ContainsKey(key))
+
+let private getPackageVersions (cwd: string option) (nodeManager : NodeManager) (pkg : NpmDependency) =
     match nodeManager with
     | NpmCompatible ->
         let res =
             // Warning: pnpm does not support show, but you can use npm show
             CreateProcess.xplatCommand "npm" [ "show"; pkg.Name; "versions"; "--json" ]
+            |> CreateProcess.withOptionalWorkingDirectory cwd
             |> CreateProcess.redirectOutput
             |> Proc.run
 
@@ -207,14 +226,27 @@ let private getPackageVersions (nodeManager : NodeManager) (pkg : NpmDependency)
     | Yarn ->
         let res =
             CreateProcess.xplatCommand nodeManager.CommandName [ "info"; pkg.Name; "versions"; "--json" ]
+            |> CreateProcess.withOptionalWorkingDirectory cwd
             |> CreateProcess.redirectOutput
             |> CreateProcess.ensureExitCode
             |> Proc.run
-        // Yarn returns ExitCode = 0 even if the packge is not found,
+        // Yarn returns ExitCode = 0 even if the package is not found,
         // so we need to check using StrErr channel
         if String.isNullOrEmpty res.Result.Error || res.Result.Error.Contains "ExperimentalWarning" then
-            let versions = Decode.unsafeFromString (Decode.field "data" (Decode.list Decode.string)) res.Result.Output
-            Some versions
+            let outputAsJson = res.Result.Output
+            let yarnV1Decoder = Decode.field "data" (Decode.list Decode.string)
+            let yarnV3Decoder =
+                Decode.field "children" (Decode.field "Version" Decode.string)
+                |> Decode.map (fun version -> [ version ])
+            
+            if jsonHasKeys ["data"] outputAsJson then
+                let versions = Decode.unsafeFromString yarnV1Decoder outputAsJson
+                Some versions
+            elif jsonHasKeys ["value"; "children"] outputAsJson then
+                let versions = Decode.unsafeFromString yarnV3Decoder outputAsJson
+                Some versions
+            else
+                None
         else
             None
 
@@ -1411,7 +1443,7 @@ and private uninstallPackage (project: string) (package: string) =
 
 and private runner (args : FemtoArgs) =
     if args.DiplayVersion then
-        printfn "%s" Version.VERSION
+        printfn $"%s{Version.VERSION}"
         FemtoResult.ValidationSucceeded
     else
         // BEGIN: Mutualized context resolution
@@ -1511,12 +1543,9 @@ and private runner (args : FemtoArgs) =
 
                 | Ok crackedProject ->
                     let packageJson = findPackageJson project
-
                     let nodeManager =
                         packageJson
                         |> Option.map workspaceCommand
-                        // TODO: Try detect if yarn is available
-                        // If yes, use yarn as resolution of version is 2 times faster
                         |> Option.defaultValue NodeManager.Npm
 
                     logger.Information("Using {Manager} for package management", nodeManager.CommandName)
@@ -1527,7 +1556,11 @@ and private runner (args : FemtoArgs) =
                             let npmDependencies =
                                 library.NpmDependencies
                                 |> List.map (fun pkg ->
-                                    match getPackageVersions nodeManager pkg with
+                                    let workingDir = 
+                                        packageJson
+                                        |> Option.map (fun packageJsonPath -> (IO.Directory.GetParent packageJsonPath).FullName)
+                                    
+                                    match getPackageVersions workingDir nodeManager pkg with
                                     | Some versions ->
                                         { pkg with Versions = versions }
                                     | None ->

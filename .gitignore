@@ -1,7 +1,7 @@
 bin
 obj
-
 .fake
 .ionide
 node_modules/
 .vs
+.idea
