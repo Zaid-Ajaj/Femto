@@ -1,6 +1,10 @@
 # Femto  [![Nuget](https://img.shields.io/nuget/v/Femto.svg?colorB=green)](https://www.nuget.org/packages/Femto)
 
-Femto is CLI tool that manages the npm packages used by [Fable](https://github.com/fable-compiler/Fable) bindings. It installs them using the npm package manager that you are using whether that is `npm` (default), `yarn` when `yarn.lock` is found or `pnpm` when `pnpm-lock.yaml` is detected.
+Femto is CLI tool that manages the npm/python packages used by [Fable](https://github.com/fable-compiler/Fable) bindings. It installs them using the package manager that you are using whether that is:
+- `npm` (default)
+- `yarn` when `yarn.lock` is found
+- `pnpm` when `pnpm-lock.yaml` is detected
+- `poetry` when `pyproject.toml` is detected
 
 Read [Introducing Femto](https://fable.io/blog/2019/2019-06-29-Introducing-Femto.html) for an in-depth understanding of why Femto is needed and what problem it solves.
 
@@ -66,7 +70,7 @@ First, Femto detects whether it needs to use paket by checking the existence of 
 
 Same as when installing a package, Femto will instruct either nuget or paket to uninstall the package except this command does not remove unused packages from npm in package.json because Femto cannot know whether the package is being used multiple projects.
 
-### Library Authors
+### Library Authors with JavaScript
 
 In order for Femto to pick up the npm packages that your library depends upon, you must add a section in the project file of your library:
 ```xml
@@ -77,6 +81,19 @@ In order for Femto to pick up the npm packages that your library depends upon, y
 </PropertyGroup>
 ```
 Notice here in the example, we have one npm package we depend upon which has requires a version that satisfies the range `gt 1.30.0 lt 2.0.0` and the resolution strategy is max. This means that Femto will find the version in this current major release with latest bug fixes but nothing in the next release because we cannot assume the binding will still work in the next major release which will most likely contain breaking changes. It is recommended to always follow the format above when specifying the version requirements.
+
+### Library Authors with Python
+
+Defining Python dependencies in your project as follows:
+
+```xml
+<PropertyGroup>
+  <PythonDependencies>
+    <Package Name="requests" Version="&gt;= 2.28.1 &lt; 3.0.0" ResolutionStrategy="Max" />
+  </PythonDependencies>
+</PropertyGroup>
+```
+
 
 ### Resolution Strategy
 
