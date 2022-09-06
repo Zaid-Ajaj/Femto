@@ -6,9 +6,9 @@
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>0.14.0</Version>
-        <PackageVersion>0.14.0</PackageVersion>
-        <PackageReleaseNotes>Add support for parsing Yarn v3 output</PackageReleaseNotes>
+        <Version>0.15.0</Version>
+        <PackageVersion>0.15.0</PackageVersion>
+        <PackageReleaseNotes>Add support for Poetry with Python</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />

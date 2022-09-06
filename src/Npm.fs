@@ -7,7 +7,7 @@ open SemVer
 
 let logger = LoggerConfiguration().WriteTo.Console().CreateLogger()
 
-type NpmDependency = {
+type InteropDependency = {
     Name: string
     Constraint: Range option
     RawVersion : string
@@ -17,7 +17,7 @@ type NpmDependency = {
     IsFetchOk : bool
 }
 
-type InstalledNpmPackage = {
+type InstalledPackage = {
     mutable Name : string
     mutable Range : Range option
     mutable Installed : Version option
@@ -81,15 +81,20 @@ let preprocessVersion (input: string)  =
       .Replace("lt", "<")
       .Replace("lte", "<=")
 
-let parseDependencies (project: string) =
+let npmRootTag = "NpmDependencies"
+let npmPackageTag = "NpmPackage"
+let pythonRootTag = "PythonDependencies"
+let pythonPackageTag = "Package"
+
+let parseDependenciesByTags (rootTag: string) (packageTag: string) (projectPath: string) =
     try
         let doc = XmlDocument()
-        doc.LoadXml (File.ReadAllText project)
-        let npmDependencies = elementsByTag doc.DocumentElement "NpmDependencies"
+        doc.LoadXml (File.ReadAllText projectPath)
+        let npmDependencies = elementsByTag doc.DocumentElement rootTag
         match npmDependencies with
         | [ rootNode ] ->
             let npmPackages =
-                "NpmPackage"
+                packageTag
                 |> elementsByTag (rootNode :?> XmlElement)
                 |> List.map (fun node -> {
                     Name = attr "Name" node;
@@ -109,3 +114,12 @@ let parseDependencies (project: string) =
             logger.Error("An error occured when parsing for dependencies")
             logger.Error(ex.Message)
             []
+
+let parseNpmDependencies = parseDependenciesByTags npmRootTag npmPackageTag
+let parsePythonDependencies = parseDependenciesByTags pythonRootTag pythonPackageTag
+
+/// Collects all metadata about interop packages from a project file
+let parseDependencies project = [
+    yield! parseNpmDependencies project
+    yield! parsePythonDependencies project
+]
