@@ -329,7 +329,7 @@ let getSatisfyingPackageVersion (pkg : InteropDependency) =
 
 /// Computes which actions are required for full package resolution of a single library based on the available npm dependency metadata and the currently installed npm packages
 let rec autoResolveActions
-    (nodeManager : PackageManager)
+    (packageManager : PackageManager)
     (library : LibraryWithNpmDeps)
     (packagesToVerify : InteropDependency list)
     (installedPackages : ResizeArray<InstalledPackage>)
@@ -410,22 +410,22 @@ let rec autoResolveActions
                 | _ ->
                     [ ]
 
-        autoResolveActions nodeManager library rest installedPackages (List.append actions resolveActions)
+        autoResolveActions packageManager library rest installedPackages (List.append actions resolveActions)
 
     | [ ] ->
         actions
 
 /// Computes the actions required for full package resolution for a list of Fable libraries based on their npm dependency metadata and the installed npm packages
 let rec autoResolve
-    (nodeManager : PackageManager)
+    (packageManager : PackageManager)
     (libraries : LibraryWithNpmDeps list)
     (installedPackages : ResizeArray<InstalledPackage>)
     (resolveActions: ResolveAction list) =
 
     match libraries with
     | library :: rest ->
-        let actions = autoResolveActions nodeManager library library.InteropDependencies installedPackages resolveActions
-        autoResolve nodeManager rest installedPackages actions
+        let actions = autoResolveActions packageManager library library.InteropDependencies installedPackages resolveActions
+        autoResolve packageManager rest installedPackages actions
 
     | [ ] ->
         resolveActions
@@ -738,7 +738,7 @@ let previewResolutionActions
     (actions: ResolveAction list)
     (installedPackages : InstalledPackage list)
     (libraries : LibraryWithNpmDeps list)
-    (nodeManager: PackageManager) =
+    (packageManager: PackageManager) =
 
     // group resolution actions by library/F# project
     let actionsByLibrary =
@@ -759,7 +759,7 @@ let previewResolutionActions
 
     for library in librariesWithoutActions do
         for npmPackage in library.InteropDependencies do
-            logger.Information("{Library} requires {PackageManager} package {Package}", library.Name, nodeManager.CommandName, npmPackage.Name)
+            logger.Information("{Library} requires {PackageManager} package {Package}", library.Name, packageManager.CommandName, npmPackage.Name)
             logger.Information("  | -- Required range {Range} found in project file", npmPackage.Constraint |> Option.map string |> Option.defaultValue npmPackage.RawVersion)
             let installedPackage = installedPackages |> List.tryFind (fun pkg -> pkg.Name = npmPackage.Name)
             match installedPackage with
@@ -796,7 +796,7 @@ let previewResolutionActions
         for (package, pkgActions) in actionsByPackage do
             // using List.find because we can assume that the dependency was part of the current library
             let requiredPackage = currentLibrary.InteropDependencies |> List.find (fun pkg -> pkg.Name = package)
-            logger.Information("{Library} requires {PackageManager} package {Package}", library, nodeManager.CommandName, package)
+            logger.Information("{Library} requires {PackageManager} package {Package}", library, packageManager.CommandName, package)
             logger.Information("  | -- Required range {Range} found in project file", requiredPackage.Constraint |> Option.map string |> Option.defaultValue requiredPackage.RawVersion)
 
             let installedPackage = installedPackages |> List.tryFind (fun pkg -> pkg.Name = package)
@@ -812,7 +812,7 @@ let previewResolutionActions
                     ignore()
 
             let nodeCmd npm yarn poetry =
-                match nodeManager with
+                match packageManager with
                 | PackageManager.Npm -> npm
                 | PackageManager.Pnpm -> $"p{npm}"
                 | PackageManager.Yarn -> yarn
