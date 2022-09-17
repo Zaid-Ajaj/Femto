@@ -6,9 +6,9 @@
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>0.15.0</Version>
-        <PackageVersion>0.15.0</PackageVersion>
-        <PackageReleaseNotes>Add support for Poetry with Python</PackageReleaseNotes>
+        <Version>0.16.0</Version>
+        <PackageVersion>0.16.0</PackageVersion>
+        <PackageReleaseNotes>Use correct name of package manager when logging</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
