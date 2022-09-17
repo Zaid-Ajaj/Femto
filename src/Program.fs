@@ -759,7 +759,7 @@ let previewResolutionActions
 
     for library in librariesWithoutActions do
         for npmPackage in library.InteropDependencies do
-            logger.Information("{Library} requires npm package {Package}", library.Name, npmPackage.Name)
+            logger.Information("{Library} requires {PackageManager} package {Package}", library.Name, nodeManager.CommandName, npmPackage.Name)
             logger.Information("  | -- Required range {Range} found in project file", npmPackage.Constraint |> Option.map string |> Option.defaultValue npmPackage.RawVersion)
             let installedPackage = installedPackages |> List.tryFind (fun pkg -> pkg.Name = npmPackage.Name)
             match installedPackage with
@@ -796,7 +796,7 @@ let previewResolutionActions
         for (package, pkgActions) in actionsByPackage do
             // using List.find because we can assume that the dependency was part of the current library
             let requiredPackage = currentLibrary.InteropDependencies |> List.find (fun pkg -> pkg.Name = package)
-            logger.Information("{Library} requires npm package {Package}", library, package)
+            logger.Information("{Library} requires {PackageManager} package {Package}", library, nodeManager.CommandName, package)
             logger.Information("  | -- Required range {Range} found in project file", requiredPackage.Constraint |> Option.map string |> Option.defaultValue requiredPackage.RawVersion)
 
             let installedPackage = installedPackages |> List.tryFind (fun pkg -> pkg.Name = package)
@@ -1013,7 +1013,7 @@ let private runResolution (resolve : bool) (packageFile : string option) (packag
     | None ->
         for library in libraries do
             for pkg in library.InteropDependencies do
-                logger.Information("{Library} requires npm package {Package} ({Version})", library.Name, pkg.Name, pkg.RawVersion)
+                logger.Information("{Library} requires {PackageManager} package {Package} ({Version})", library.Name, packageManager.CommandName, pkg.Name, pkg.RawVersion)
 
         logger.Warning "Could not locate package.json file"
         FemtoResult.MissingPackageJson
