@@ -8,7 +8,9 @@ open System.Linq
 open System.IO
 open System.Xml.Linq
 open System.Collections.Generic
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis
+open Fake.SystemHelper
+open Fake.Core
 
 let isSystemPackage (pkgName: string) =
     pkgName.StartsWith("System.")
@@ -46,24 +48,7 @@ let makeProjectOptions project sources otherOptions: FSharpProjectOptions =
       LoadTime = System.DateTime.MaxValue
       UnresolvedReferences = None
       OriginalLoadReferences = []
-      ExtraProjectInfo = None
       Stamp = None }
-
-// let getProjectOptionsFromScript (checker: InteractiveChecker) (define: string[]) scriptFile =
-//     let otherFlags = [|
-//         yield "--target:library"
-// #if !NETFX
-//         yield "--targetprofile:netcore"
-// #endif
-//         for constant in define do yield "--define:" + constant
-//     |]
-//     checker.GetProjectOptionsFromScript(scriptFile, File.ReadAllText scriptFile,
-//                                         assumeDotNetFramework=false, otherFlags=otherFlags)
-//     |> Async.RunSynchronously
-//     |> fun (opts, _errors) ->
-//         // TODO: Check errors
-//         opts.OtherOptions
-//         |> makeProjectOptions scriptFile opts.SourceFiles
 
 let getBasicCompilerArgs (define: string[]) =
     [|
@@ -197,6 +182,126 @@ let private isUsefulOption (opt : string) =
       "--warnaserror" ]
     |> List.exists opt.StartsWith
 
+
+let nugetPackagesDirectory(projectFile: string) = 
+    let projectDir = Path.GetDirectoryName(projectFile)
+    let nugetPackageDirectory = 
+        CreateProcess.xplatCommand "dotnet" ["nuget"; "locals"; "global-packages"; "--list"]
+        |> CreateProcess.withWorkingDirectory projectDir
+        |> CreateProcess.redirectOutput
+        |> CreateProcess.run
+
+    if nugetPackageDirectory.ExitCode <> 0 then 
+        None
+    else
+        let stdout = nugetPackageDirectory.Result.Output
+        let index = stdout.IndexOf("global-packages:")
+        let packagesDir = stdout.[index + 17 .. stdout.Length - 1].Trim()
+        Some packagesDir
+
+type PackageRef = { name: string; version: string }
+
+let listPackageReferences (projectFile: string) = 
+    let projectDir = Path.GetDirectoryName(projectFile)
+    let packages = 
+        CreateProcess.xplatCommand "dotnet" ["list"; "package"; "--include-transitive"]
+        |> CreateProcess.withWorkingDirectory projectDir
+        |> CreateProcess.redirectOutput
+        |> CreateProcess.run
+
+    if packages.ExitCode <> 0 then 
+        printfn "Failed to run: dotnet list package --include-transitive"
+        printfn "Output: %s" packages.Result.Error
+        [ ]
+    else
+        let stdout = packages.Result.Output
+        stdout.Split(Environment.NewLine) 
+        |> Array.toList
+        |> List.filter (fun line -> not (String.isNullOrEmpty line))
+        |> List.filter (fun line -> line.Contains ">")
+        |> List.choose (fun line -> 
+            let segments = 
+                line.Replace(">", "").Split " "
+                |> Array.filter (fun segment -> not (String.isNullOrEmpty segment))
+                |> Array.toList
+
+            match segments with
+            | [ package; requiredVersion; resolvedVersion ] -> 
+                Some { name = package; version = resolvedVersion }
+            | [ package; resolvedVersion ] -> 
+                Some { name = package; version = resolvedVersion }
+            | _ -> 
+                None
+        )
+
+let normalizePaketVersion (version: string) = 
+    match version.Split "." with
+    | [| major; minor; |] -> sprintf "%s.%s.0" major minor
+    | [| major; minor; patch |] -> sprintf "%s.%s.%s" major minor patch
+    | _ -> version
+
+let listPaketPackages (workingDir: string) = 
+    let availablePackages = 
+        CreateProcess.xplatCommand "dotnet" [ "paket"; "show-installed-packages" ]
+        |> CreateProcess.withWorkingDirectory workingDir
+        |> CreateProcess.redirectOutput
+        |> CreateProcess.run
+
+    if availablePackages.ExitCode <> 0 then 
+        printfn "Failed to run: dotnet paket show-installed-packages"
+        printfn "Output: %s" availablePackages.Result.Error
+        [ ]
+    else
+        let stdout = availablePackages.Result.Output
+        stdout.Split(Environment.NewLine) 
+        |> Array.toList
+        |> List.filter (fun line -> not (String.isNullOrEmpty line))
+        |> List.filter (fun line -> 
+            not (line.StartsWith "Paket version")
+            && not (line.StartsWith "Total time taken"))
+        |> List.choose (fun line -> 
+            let segments = 
+                line.Split " "
+                |> Array.filter (fun segment -> not (String.isNullOrEmpty segment))
+                |> Array.toList
+
+            match segments with
+            | [ group; package; _; version ] -> 
+                Some { name = package; version = normalizePaketVersion version }
+            | _ -> 
+                None
+        )
+
+let extractFablePackages (projectFile: string) =
+    match nugetPackagesDirectory projectFile with
+    | None -> seq [ ]
+    | Some packagesDirectory ->  
+        let fablePackages = ResizeArray [ ]
+        let projectDirectory = Path.GetDirectoryName projectFile
+        let usingPaket = File.Exists (Path.Combine(projectDirectory, "paket.references"))
+
+        let packageReferences = 
+            if usingPaket then
+                listPaketPackages projectDirectory
+            else
+                listPackageReferences projectFile
+
+        for packageReference in packageReferences do
+            let packageName = packageReference.name.ToLower()
+            let fablePackageDirectory = IO.Path.Combine(packagesDirectory, packageName, packageReference.version, "fable")
+            if Directory.Exists(fablePackageDirectory) then
+                for file in Directory.EnumerateFiles(fablePackageDirectory) do
+                    if file.EndsWith(".fsproj") then
+                        fablePackages.Add { 
+                            Id = file; 
+                            Version = packageReference.version
+                            FsprojPath = file 
+                            Dependencies = Set.empty
+                        }
+
+        fablePackages
+        |> Seq.distinctBy (fun package -> package.Id, package.Version)
+
 /// Use Dotnet.ProjInfo (through ProjectCoreCracker) to invoke MSBuild
 /// and get F# compiler args from an .fsproj file. As we'll merge this
 /// later with other projects we'll only take the sources and the references,
@@ -237,11 +342,21 @@ let fullCrack (projFile: string): CrackedFsproj =
         projRefs |> List.map (fun projRef ->
             // Remove dllRefs corresponding to project references
             let projName = Path.GetFileNameWithoutExtension(projRef)
-            let removed = dllRefs.Remove(projName)
-            if not removed then
-                printfn "Couldn't remove project reference %s from dll references" projName
+            if dllRefs.ContainsKey projName then ignore(dllRefs.Remove(projName))
             Path.normalizeFullPath projRef)
+
     let fablePkgs =
+        if dllRefs.Count = 0  then
+            // probably running against net7.0
+            // doesn't use dll references
+            // fallback to a simplistic approach
+            [
+                yield! extractFablePackages projFile
+                for projRef in projRefs do
+                    yield! extractFablePackages projRef
+            ]
+
+        else
         let dllRefs' = dllRefs |> Seq.map (fun (KeyValue(k,v)) -> k,v) |> Seq.toArray
         dllRefs' |> Seq.choose (fun (dllName, dllPath) ->
             match tryGetFablePackage dllPath with

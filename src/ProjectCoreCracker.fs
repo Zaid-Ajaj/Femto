@@ -4,7 +4,7 @@ module Femto.ProjectCoreCracker
 open System
 open System.IO
 
-open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.CodeAnalysis
 
 module MSBuildPrj = Dotnet.ProjInfo.Inspect
 
@@ -145,7 +145,6 @@ let rec private projInfo additionalMSBuildProps (file: string) =
         LoadTime = DateTime.Now
         UnresolvedReferences = None;
         OriginalLoadReferences = []
-        ExtraProjectInfo = None
         Stamp = None
       }
 
