@@ -6,9 +6,9 @@
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>0.17.0</Version>
-        <PackageVersion>0.17.0</PackageVersion>
-        <PackageReleaseNotes>Support net7.0 based projects using either paket or nuget</PackageReleaseNotes>
+        <Version>0.17.1</Version>
+        <PackageVersion>0.17.1</PackageVersion>
+        <PackageReleaseNotes>Correct the version number</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
