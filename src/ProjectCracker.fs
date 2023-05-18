@@ -125,9 +125,8 @@ let tryGetFablePackage (dllPath: string) =
     else
         let rootDir = IO.Path.Combine(IO.Path.GetDirectoryName(dllPath), "..", "..")
         let fableDir = IO.Path.Combine(rootDir, "fable")
-        match tryFileWithPattern rootDir "*.nuspec",
-              tryFileWithPattern fableDir "*.fsproj" with
-        | Some nuspecPath, Some fsprojPath ->
+        let srcDir = IO.Path.Combine(rootDir, "src")
+        let getFablePackage (nuspecPath: string) fsprojPath =
             let xmlDoc = XDocument.Load(nuspecPath)
             let metadata =
                 xmlDoc.Root.Elements()
@@ -144,6 +143,14 @@ let tryGetFablePackage (dllPath: string) =
                 |> Seq.filter (isSystemPackage >> not)
                 |> Set
             } |> Some
+        match tryFileWithPattern rootDir "*.nuspec",
+              tryFileWithPattern fableDir "*.fsproj" with
+        | Some nuspecPath, Some fsprojPath ->
+            getFablePackage nuspecPath fsprojPath
+        | Some nuspecPath, _ ->
+            match tryFileWithPattern srcDir "*.fsproj" with
+            | Some fsprojPath -> getFablePackage nuspecPath fsprojPath
+            | None -> None
         | _ -> None
 
 /// Simplistic XML-parsing of .fsproj to get source files, as we cannot
@@ -286,19 +293,26 @@ let extractFablePackages (projectFile: string) =
             else
                 listPackageReferences projectFile
 
+        let addFablePackage (file: string) (packageReference: PackageRef) =
+            if file.EndsWith(".fsproj") then
+                fablePackages.Add {
+                    Id = file;
+                    Version = packageReference.version
+                    FsprojPath = file
+                    Dependencies = Set.empty
+                }
+
         for packageReference in packageReferences do
             let packageName = packageReference.name.ToLower()
             let fablePackageDirectory = IO.Path.Combine(packagesDirectory, packageName, packageReference.version, "fable")
             if Directory.Exists(fablePackageDirectory) then
                 for file in Directory.EnumerateFiles(fablePackageDirectory) do
-                    if file.EndsWith(".fsproj") then
-                        fablePackages.Add { 
-                            Id = file; 
-                            Version = packageReference.version
-                            FsprojPath = file 
-                            Dependencies = Set.empty
-                        }
-
+                    addFablePackage file packageReference
+            else
+                let srcPackageDirectory = IO.Path.Combine(packagesDirectory, packageName, packageReference.version, "src")
+                if Directory.Exists(srcPackageDirectory) then
+                    for file in Directory.EnumerateFiles(srcPackageDirectory) do
+                        addFablePackage file packageReference
         fablePackages
         |> Seq.distinctBy (fun package -> package.Id, package.Version)
 
