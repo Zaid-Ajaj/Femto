@@ -6,9 +6,9 @@
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>0.17.1</Version>
-        <PackageVersion>0.17.1</PackageVersion>
-        <PackageReleaseNotes>Correct the version number</PackageReleaseNotes>
+        <Version>0.18.0</Version>
+        <PackageVersion>0.18.0</PackageVersion>
+        <PackageReleaseNotes>Look for package metadata under src directory</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
