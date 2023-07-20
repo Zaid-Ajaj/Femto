@@ -229,7 +229,11 @@ let private getPackageVersions (cwd: string option) (packageManager : PackageMan
             |> Proc.run
 
         if res.ExitCode = 0 then
-            let versions = Decode.unsafeFromString (Decode.list Decode.string) res.Result.Output
+            let npmDecoder = Decode.oneOf [
+                (Decode.list Decode.string)
+                (Decode.map List.singleton Decode.string)
+            ]
+            let versions = Decode.unsafeFromString npmDecoder res.Result.Output
             Some versions
         else
             None
