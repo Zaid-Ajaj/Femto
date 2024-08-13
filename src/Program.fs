@@ -8,6 +8,7 @@ open Fake.Core
 open Thoth.Json.Net
 open Newtonsoft.Json
 open Newtonsoft.Json.Linq
+open Legivel.Attributes
 open Fake.SystemHelper
 open Argu
 
@@ -42,8 +43,8 @@ type ResolveAction =
     | UnableToResolve of library:string * package:string * range:string * error: string
 
 type PackageFile = {
-    Dependencies : Map<string, string> option
-    DevDependencies : Map<string, string> option
+    [<YamlField("dependencies")>] Dependencies : Map<string, string> option
+    [<YamlField("devDependencies")>] DevDependencies : Map<string, string> option
 }
 
 let findLibraryWithDependencies (project: CrackedFsproj) =
