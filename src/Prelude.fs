@@ -3,7 +3,7 @@ namespace Femto
 type FemtoResult =
     | UnexpectedError = -1
     | ValidationSucceeded = 0
-    | MissingPackageJson = 1
+    | MissingPackageFile = 1
     | NodeModulesNotInstalled = 2
     | ValidationFailed = 3
     | ProjectFileNotFound = 4

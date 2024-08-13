@@ -41,7 +41,7 @@ type ResolveAction =
     | UninstallDev of library:string * package: string * version:string
     | UnableToResolve of library:string * package:string * range:string * error: string
 
-type PackageJson = {
+type PackageFile = {
     Dependencies : Map<string, string> option
     DevDependencies : Map<string, string> option
 }
@@ -70,7 +70,7 @@ let rec findFile (fileName: string) (project: string) =
       |> Option.orElse (findFile fileName parentDir.FullName)
 
 /// Determines the full path of the package.json file by recursively checking every directory and it's parent starting from the path of the project file
-let findPackageJson = findFile "package.json"
+let findPackageFile = findFile "package.json"
 
 /// Determines the full path of the pyproject.toml file by recursively checking every directory and it's parent starting from the path of the project file
 let findPyProject = findFile "pyproject.toml"
@@ -158,7 +158,7 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
                 yield! createInstalledPackages true rawPackage.DevDependencies
             ]
         | Error errorMessage ->
-            logger.Error("Couldn't find packages in 'package.json' file. Reason: {Message}", errorMessage)
+            logger.Error("Couldn't find packages in '{PackageFile}' file. Reason: {Message}", packageFile, errorMessage)
             ResizeArray []
 
     if needsNodeModules packageFile
@@ -174,16 +174,16 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
         let siblings = IO.Directory.GetDirectories parentDir.FullName
         // using Array.find because we know for sure node_modules is present
         let nodeModulePath = siblings |> Array.find (fun dir -> dir.EndsWith "node_modules")
-        let rec checkPackageJsons nodeModulePath =
+        let rec checkPackageFiles nodeModulePath =
             for dir in IO.Directory.GetDirectories nodeModulePath do
                 let dirname = IO.Path.GetFileName(dir)
                 // Scoped packages
                 if dirname.StartsWith("@") then
-                    checkPackageJsons dir
+                    checkPackageFiles dir
                 else
-                    let pkgJson = IO.Path.Combine(dir, "package.json")
+                    let pkgFile = IO.Path.Combine(dir, packageFile)
                     // Some packages create a cache dir in node_modules starting with . like .vite
-                    if not(dirname.StartsWith(".")) && IO.File.Exists pkgJson then
+                    if not(dirname.StartsWith(".")) && IO.File.Exists pkgFile then
                         let nameAndVersionDecoder = Decode.object (fun get ->
                             let name = get.Required.Field "name" Decode.string
                             let version = get.Required.Field "version" Decode.string
@@ -191,7 +191,7 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
                         )
 
                         let decoded =
-                            File.readAllTextNonBlocking pkgJson
+                            File.readAllTextNonBlocking pkgFile
                             |> Decode.fromString nameAndVersionDecoder
 
                         match decoded with
@@ -201,10 +201,10 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
                                 then package.Installed <- Some (SemVer.Version version)
                                 else ()
                         | Error errorMessage ->
-                            logger.Error("Couldn't decode 'package.json' from {PackageJson}. Reason: {Message}", pkgJson, errorMessage)
+                            logger.Error("Couldn't decode '{PackageFile}' from {PkgFile}. Reason: {Message}", packageFile, pkgFile, errorMessage)
                             ()
 
-        checkPackageJsons nodeModulePath
+        checkPackageFiles nodeModulePath
         topLevelPackages
         
 let jsonHasKeys (keys: string list) (jsonObject: string) =
@@ -934,7 +934,7 @@ let restorePackages (packageFile : string) (packageManager : PackageManager) =
     | PackageManager.Yarn -> 
         let packageFileDir = (IO.Directory.GetParent packageFile).FullName
 
-        logger.Information("Found package.json in {Dir}", packageFileDir)
+        logger.Information("Found {PackageFile} in {Dir}", packageFile, packageFileDir)
         if needsNodeModules packageFile then
             logger.Information("Npm packages need to be restored first for project analysis")
             let restoreCommand = $"{packageManager.CommandName} install"
@@ -983,8 +983,8 @@ let private runResolution (resolve : bool) (packageFile : string option) (packag
             for pkg in library.InteropDependencies do
                 logger.Information("{Library} requires {PackageManager} package {Package} ({Version})", library.Name, packageManager.CommandName, pkg.Name, pkg.RawVersion)
 
-        logger.Warning "Could not locate package.json file"
-        FemtoResult.MissingPackageJson
+        logger.Warning "Could not locate any one of the following files: package.yaml, package.json5, package.json"
+        FemtoResult.MissingPackageFile
 
     | Some packageFile ->
         restorePackages packageFile packageManager
@@ -1625,7 +1625,7 @@ and private runner (args : FemtoArgs) =
                 | Ok crackedProject ->
                     // either find package.json or pyproject.toml
                     let packageFile =
-                        findPackageJson project
+                        findPackageFile project
                         |> Option.orElse (findPyProject project)
 
                     let packageManager =
