@@ -144,8 +144,26 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
         packages
     else
     let file = IO.File.ReadAllText packageFile
+    let parsedPackageFile =
+        if packageFile.EndsWith "json5" then
+            Json5Parser.parsePackageJson5 file
+            |> Result.map (fun res -> {
+                Dependencies = res.Dependencies
+                DevDependencies = res.DevDependencies 
+            })
+        elif packageFile.EndsWith "yaml" then
+            match Legivel.Serialization.Deserialize<PackageFile> file with
+            | Legivel.Serialization.Success s :: _ -> Ok s.Data
+            | Legivel.Serialization.Error e :: _ ->
+                e.Error
+                |> List.map _.Message
+                |> String.concat "\n"
+                |> Error
+            | [] -> Error "No YAML document found"
+        else
+            Decode.Auto.fromString<PackageFile>(file, isCamelCase = true)
     let topLevelPackages =
-        match Decode.Auto.fromString<PackageJson>(file, isCamelCase = true) with
+        match parsedPackageFile with
         | Ok rawPackage ->
             let createInstalledPackages isDevDependency (dependencies: Map<string, string> option) =
                  dependencies
