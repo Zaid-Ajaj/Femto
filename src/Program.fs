@@ -69,8 +69,11 @@ let rec findFile (fileName: string) (project: string) =
       |> Seq.tryFind (fun file -> Path.GetFileName file = fileName)
       |> Option.orElse (findFile fileName parentDir.FullName)
 
-/// Determines the full path of the package.json file by recursively checking every directory and it's parent starting from the path of the project file
-let findPackageFile = findFile "package.json"
+/// Determines the full path of the package.{yaml,json5,json} (in that order) file by recursively checking every directory and it's parent starting from the path of the project file
+let findPackageFile dir =
+    findFile "package.yaml" dir
+    |> Option.orElse (findFile "package.json5" dir)
+    |> Option.orElse (findFile "package.json" dir)
 
 /// Determines the full path of the pyproject.toml file by recursively checking every directory and it's parent starting from the path of the project file
 let findPyProject = findFile "pyproject.toml"
