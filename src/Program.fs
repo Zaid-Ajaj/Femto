@@ -42,11 +42,6 @@ type ResolveAction =
     | UninstallDev of library:string * package: string * version:string
     | UnableToResolve of library:string * package:string * range:string * error: string
 
-type PackageFile = {
-    [<YamlField("dependencies")>] Dependencies : Map<string, string> option
-    [<YamlField("devDependencies")>] DevDependencies : Map<string, string> option
-}
-
 let findLibraryWithDependencies (project: CrackedFsproj) =
     [ yield project.ProjectFile
       yield! project.ProjectReferences
@@ -143,27 +138,8 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
 
         packages
     else
-    let file = IO.File.ReadAllText packageFile
-    let parsedPackageFile =
-        if packageFile.EndsWith "json5" then
-            Json5Parser.parsePackageJson5 file
-            |> Result.map (fun res -> {
-                Dependencies = res.Dependencies
-                DevDependencies = res.DevDependencies 
-            })
-        elif packageFile.EndsWith "yaml" then
-            match Legivel.Serialization.Deserialize<PackageFile> file with
-            | Legivel.Serialization.Success s :: _ -> Ok s.Data
-            | Legivel.Serialization.Error e :: _ ->
-                e.Error
-                |> List.map _.Message
-                |> String.concat "\n"
-                |> Error
-            | [] -> Error "No YAML document found"
-        else
-            Decode.Auto.fromString<PackageFile>(file, isCamelCase = true)
     let topLevelPackages =
-        match parsedPackageFile with
+        match NpmPackageFileParser.parse packageFile with
         | Ok rawPackage ->
             let createInstalledPackages isDevDependency (dependencies: Map<string, string> option) =
                  dependencies

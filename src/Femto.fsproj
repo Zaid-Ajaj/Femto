@@ -18,7 +18,7 @@
         <Compile Include="CreateProcess.fs" />
         <Compile Include="ProjectCoreCracker.fs" />
         <Compile Include="ProjectCracker.fs" />
-        <Compile Include="Json5Parser.fs" />
+        <Compile Include="NpmPackageFileParser.fs" />
         <Compile Include="Program.fs" />
     </ItemGroup>
     <ItemGroup>
