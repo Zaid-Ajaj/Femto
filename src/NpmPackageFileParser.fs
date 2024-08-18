@@ -55,4 +55,4 @@ let parse packageFile =
     elif packageFile.EndsWith "yaml" then
         Yaml.parse file
     else
-        Decode.Auto.fromString<PackageFile>(file, isCamelCase = true)
+        Json.parse file
