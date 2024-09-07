@@ -6,9 +6,9 @@
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>0.19.0</Version>
-        <PackageVersion>0.19.0</PackageVersion>
-        <PackageReleaseNotes>Fix for failure when npm packages only have a single version</PackageReleaseNotes>
+        <Version>0.20.0</Version>
+        <PackageVersion>0.20.0</PackageVersion>
+        <PackageReleaseNotes>Support package.yaml and package.json5</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
