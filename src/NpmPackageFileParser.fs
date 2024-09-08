@@ -1,4 +1,4 @@
-﻿module Femto.NpmPackageFileParser
+module Femto.NpmPackageFileParser
 
 open Thoth.Json.Net
 open fastJSON5
@@ -18,7 +18,7 @@ module Json5 =
         DevDependencies : Dictionary<string, string>
     }
 
-    let parse json5 =
+    let parseDependencies json5 =
         try
             let parseResult = JSON5.ToObject<Json5PackageFile>(json5)
             {
@@ -34,7 +34,7 @@ module Json5 =
         | e -> Error e.Message
 
 module Yaml =
-    let parse yaml =
+    let parseDependencies yaml =
         match Legivel.Serialization.Deserialize<PackageFile> yaml with
         | Legivel.Serialization.Success s :: _ -> Ok s.Data
         | Legivel.Serialization.Error e :: _ ->
@@ -45,14 +45,14 @@ module Yaml =
         | [] -> Error "No YAML document found"
 
 module Json =
-    let parse json =
+    let parseDependencies json =
         Decode.Auto.fromString<PackageFile>(json, isCamelCase = true)
 
-let parse packageFile =
+let parseDependencies packageFile =
     let file = IO.File.ReadAllText packageFile
     if packageFile.EndsWith "json5" then
-        Json5.parse file
+        Json5.parseDependencies file
     elif packageFile.EndsWith "yaml" then
-        Yaml.parse file
+        Yaml.parseDependencies file
     else
-        Json.parse file
+        Json.parseDependencies file

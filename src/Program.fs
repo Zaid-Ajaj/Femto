@@ -139,7 +139,7 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
         packages
     else
     let topLevelPackages =
-        match NpmPackageFileParser.parse packageFile with
+        match NpmPackageFileParser.parseDependencies packageFile with
         | Ok rawPackage ->
             let createInstalledPackages isDevDependency (dependencies: Map<string, string> option) =
                  dependencies
