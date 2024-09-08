@@ -63,7 +63,7 @@ module Yaml =
         | Legivel.Serialization.Success s :: _ -> Ok (s.Data.Name, s.Data.Version)
         | Legivel.Serialization.Error e :: _ ->
             e.Error
-            |> List.map _.Message
+            |> List.map (fun x -> x.Message)
             |> String.concat "\n"
             |> Error
         | [] -> Error "No YAML document found"

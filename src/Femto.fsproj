@@ -6,9 +6,9 @@
         <IsPackable>true</IsPackable>
         <RollForward>Major</RollForward>
         <TargetFramework>net6.0</TargetFramework>
-        <Version>0.20.0</Version>
-        <PackageVersion>0.20.0</PackageVersion>
-        <PackageReleaseNotes>Support package.yaml and package.json5</PackageReleaseNotes>
+        <Version>0.21.0</Version>
+        <PackageVersion>0.21.0</PackageVersion>
+        <PackageReleaseNotes>Fix name and version parsing package.yaml and package.json5</PackageReleaseNotes>
     </PropertyGroup>
     <ItemGroup>
         <Compile Include="Version.fs" />
