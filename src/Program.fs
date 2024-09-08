@@ -182,15 +182,7 @@ let findInstalledPackages (packageFile: string) (packageManager: PackageManager)
                     let pkgFile = IO.Path.Combine(dir, packageFile)
                     // Some packages create a cache dir in node_modules starting with . like .vite
                     if not(dirname.StartsWith(".")) && IO.File.Exists pkgFile then
-                        let nameAndVersionDecoder = Decode.object (fun get ->
-                            let name = get.Required.Field "name" Decode.string
-                            let version = get.Required.Field "version" Decode.string
-                            name, version
-                        )
-
-                        let decoded =
-                            File.readAllTextNonBlocking pkgFile
-                            |> Decode.fromString nameAndVersionDecoder
+                        let decoded = NpmPackageFileParser.parseNameAndVersion pkgFile
 
                         match decoded with
                         | Ok (name, version) ->
